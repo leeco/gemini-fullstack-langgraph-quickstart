@@ -7,7 +7,7 @@ from langgraph.types import Send
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from langchain_core.runnables import RunnableConfig
-from google.genai import Client
+import dashscope
 
 from agent.state import (
     OverallState,
@@ -23,7 +23,7 @@ from agent.prompts import (
     reflection_instructions,
     answer_instructions,
 )
-from langchain_google_genai import ChatGoogleGenerativeAI
+
 from agent.utils import (
     get_citations,
     get_research_topic,
@@ -33,18 +33,18 @@ from agent.utils import (
 
 load_dotenv()
 
-if os.getenv("GEMINI_API_KEY") is None:
-    raise ValueError("GEMINI_API_KEY is not set")
+if os.getenv("DASHSCOPE_API_KEY") is None:
+    raise ValueError("DASHSCOPE_API_KEY is not set")
 
-# Used for Google Search API
-genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Initialize DashScope
+dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
 
 
 # Nodes
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
     """LangGraph node that generates search queries based on the User's question.
 
-    Uses Gemini 2.0 Flash to create an optimized search queries for web research based on
+    Uses Qwen model to create an optimized search queries for web research based on
     the User's question.
 
     Args:
@@ -60,14 +60,14 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # init Gemini 2.0 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=configurable.query_generator_model,
-        temperature=1.0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
-    structured_llm = llm.with_structured_output(SearchQueryList)
+    # init Qwen model - 使用DashScope Generation直接调用
+    try:
+        from dashscope import Generation
+        import json
+    except ImportError as e:
+        print(f"DashScope导入失败: {e}")
+        print("请安装: pip install dashscope")
+        return {"search_query": [get_research_topic(state["messages"])]}
 
     # Format the prompt
     current_date = get_current_date()
@@ -76,9 +76,47 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
         research_topic=get_research_topic(state["messages"]),
         number_queries=state["initial_search_query_count"],
     )
-    # Generate the search queries
-    result = structured_llm.invoke(formatted_prompt)
-    return {"search_query": result.query}
+    
+    # Generate the search queries - 使用DashScope Generation直接调用
+    try:
+        response = Generation.call(
+            model=configurable.query_generator_model,
+            prompt=formatted_prompt,
+            temperature=1.0
+        )
+        
+        if response.status_code == 200:
+            content = response.output.text
+            
+            # 尝试解析JSON格式的输出
+            try:
+                # 查找JSON部分
+                start_idx = content.find('{')
+                end_idx = content.rfind('}') + 1
+                
+                if start_idx >= 0 and end_idx > start_idx:
+                    json_str = content[start_idx:end_idx]
+                    parsed_result = json.loads(json_str)
+                    queries = parsed_result.get('query', [])
+                    if isinstance(queries, list) and queries:
+                        return {"search_query": queries}
+                
+                # 如果JSON解析失败，创建基于主题的查询
+                topic = get_research_topic(state["messages"])
+                return {"search_query": [topic]}
+                
+            except json.JSONDecodeError:
+                # JSON解析失败，使用主题作为查询
+                topic = get_research_topic(state["messages"])
+                return {"search_query": [topic]}
+        else:
+            print(f"DashScope API调用失败: {response.message}")
+            return {"search_query": [get_research_topic(state["messages"])]}
+            
+    except Exception as e:
+        print(f"在生成查询过程中发生错误: {e}")
+        # Fallback: create a simple query from the topic
+        return {"search_query": [get_research_topic(state["messages"])]}
 
 
 def continue_to_web_research(state: QueryGenerationState):
@@ -93,9 +131,9 @@ def continue_to_web_research(state: QueryGenerationState):
 
 
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using the native Google Search API tool.
+    """LangGraph node that performs web research using DashScope.
 
-    Executes a web search using the native Google Search API tool in combination with Gemini 2.0 Flash.
+    Executes text generation using DashScope API in combination with Qwen model.
 
     Args:
         state: Current graph state containing the search query and research loop count
@@ -111,23 +149,24 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
         research_topic=state["search_query"],
     )
 
-    # Uses the google genai client as the langchain client doesn't return grounding metadata
-    response = genai_client.models.generate_content(
+    # Use DashScope for text generation (web search functionality simplified for now)
+    from dashscope import Generation
+    
+    response = Generation.call(
         model=configurable.query_generator_model,
-        contents=formatted_prompt,
-        config={
-            "tools": [{"google_search": {}}],
-            "temperature": 0,
-        },
+        prompt=formatted_prompt,
+        temperature=0,
     )
-    # resolve the urls to short urls for saving tokens and time
-    resolved_urls = resolve_urls(
-        response.candidates[0].grounding_metadata.grounding_chunks, state["id"]
-    )
-    # Gets the citations and adds them to the generated text
-    citations = get_citations(response, resolved_urls)
-    modified_text = insert_citation_markers(response.text, citations)
-    sources_gathered = [item for citation in citations for item in citation["segments"]]
+    
+    # Simplified response handling (without web search for now)
+    if response.status_code == 200:
+        response_text = response.output.text
+        # For now, create a simple mock citation structure
+        citations = []
+        sources_gathered = []
+        modified_text = response_text
+    else:
+        raise Exception(f"DashScope API error: {response.message}")
 
     return {
         "sources_gathered": sources_gathered,
@@ -162,22 +201,76 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
         research_topic=get_research_topic(state["messages"]),
         summaries="\n\n---\n\n".join(state["web_research_result"]),
     )
-    # init Reasoning Model
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
-        temperature=1.0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
-    result = llm.with_structured_output(Reflection).invoke(formatted_prompt)
-
-    return {
-        "is_sufficient": result.is_sufficient,
-        "knowledge_gap": result.knowledge_gap,
-        "follow_up_queries": result.follow_up_queries,
-        "research_loop_count": state["research_loop_count"],
-        "number_of_ran_queries": len(state["search_query"]),
-    }
+    # init Reasoning Model - 使用DashScope Generation直接调用
+    try:
+        from dashscope import Generation
+        import json
+    except ImportError as e:
+        print(f"DashScope导入失败: {e}")
+        print("请安装: pip install dashscope")
+        return {
+            "is_sufficient": True,
+            "knowledge_gap": "",
+            "follow_up_queries": [],
+            "research_loop_count": state["research_loop_count"],
+            "number_of_ran_queries": len(state["search_query"]),
+        }
+    
+        # Generate reflection - 使用DashScope Generation直接调用
+    try:
+        response = Generation.call(
+            model=reasoning_model,
+            prompt=formatted_prompt,
+            temperature=1.0
+        )
+        
+        if response.status_code == 200:
+            content = response.output.text
+            
+            # 尝试解析JSON格式的输出
+            try:
+                # 查找JSON部分
+                start_idx = content.find('{')
+                end_idx = content.rfind('}') + 1
+                
+                if start_idx >= 0 and end_idx > start_idx:
+                    json_str = content[start_idx:end_idx]
+                    parsed_result = json.loads(json_str)
+                    
+                    is_sufficient = parsed_result.get('is_sufficient', True)
+                    knowledge_gap = parsed_result.get('knowledge_gap', '')
+                    follow_up_queries = parsed_result.get('follow_up_queries', [])
+                    
+                    return {
+                        "is_sufficient": is_sufficient,
+                        "knowledge_gap": knowledge_gap,
+                        "follow_up_queries": follow_up_queries,
+                        "research_loop_count": state["research_loop_count"],
+                        "number_of_ran_queries": len(state["search_query"]),
+                    }
+                
+            except json.JSONDecodeError:
+                pass
+                
+        # 如果解析失败或API调用失败，返回默认值
+        return {
+            "is_sufficient": True,
+            "knowledge_gap": "",
+            "follow_up_queries": [],
+            "research_loop_count": state["research_loop_count"],
+            "number_of_ran_queries": len(state["search_query"]),
+        }
+        
+    except Exception as e:
+        print(f"在反思过程中发生错误: {e}")
+        # Fallback values
+        return {
+            "is_sufficient": True,
+            "knowledge_gap": "",
+            "follow_up_queries": [],
+            "research_loop_count": state["research_loop_count"],
+            "number_of_ran_queries": len(state["search_query"]),
+        }
 
 
 def evaluate_research(
@@ -241,26 +334,38 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         summaries="\n---\n\n".join(state["web_research_result"]),
     )
 
-    # init Reasoning Model, default to Gemini 2.5 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
-        temperature=0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
-    result = llm.invoke(formatted_prompt)
+    # init Reasoning Model, default to Qwen Max - 使用DashScope Generation直接调用
+    try:
+        from dashscope import Generation
+        
+        response = Generation.call(
+            model=reasoning_model,
+            prompt=formatted_prompt,
+            temperature=0
+        )
+        
+        if response.status_code == 200:
+            result_content = response.output.text
+        else:
+            print(f"DashScope API调用失败: {response.message}")
+            result_content = "抱歉，由于技术问题无法生成详细答案。"
+            
+    except Exception as e:
+        print(f"无法调用DashScope或生成答案: {e}")
+        # Create a simple fallback response
+        result_content = "抱歉，由于技术问题无法生成详细答案。"
 
     # Replace the short urls with the original urls and add all used urls to the sources_gathered
     unique_sources = []
     for source in state["sources_gathered"]:
-        if source["short_url"] in result.content:
-            result.content = result.content.replace(
+        if source["short_url"] in result_content:
+            result_content = result_content.replace(
                 source["short_url"], source["value"]
             )
             unique_sources.append(source)
 
     return {
-        "messages": [AIMessage(content=result.content)],
+        "messages": [AIMessage(content=result_content)],
         "sources_gathered": unique_sources,
     }
 
