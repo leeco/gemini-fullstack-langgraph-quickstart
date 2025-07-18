@@ -21,3 +21,17 @@ class Reflection(BaseModel):
     follow_up_queries: List[str] = Field(
         description="A list of follow-up queries to address the knowledge gap."
     )
+
+
+class WebSearchResult(BaseModel):
+    """网络搜索结果的结构化输出"""
+    search_content: str = Field(description="搜索得到的内容摘要")
+    sources: List[dict] = Field(description="信息来源列表，包含url和标题", default=[])
+    key_findings: List[str] = Field(description="关键发现列表", default=[])
+
+
+class FinalAnswer(BaseModel):
+    """最终答案的结构化输出"""
+    answer: str = Field(description="基于研究结果的完整答案")
+    summary_points: List[str] = Field(description="关键要点列表", default=[])
+    confidence_level: int = Field(description="答案可信度评分1-10", ge=1, le=10, default=8)

@@ -1,13 +1,13 @@
 import os
 
-from agent.tools_and_schemas import SearchQueryList, Reflection
+from agent.tools_and_schemas import SearchQueryList, Reflection, WebSearchResult, FinalAnswer
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langgraph.types import Send
 from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from langchain_core.runnables import RunnableConfig
-import dashscope
+from langchain_community.chat_models import ChatTongyi
 
 from agent.state import (
     OverallState,
@@ -31,21 +31,12 @@ from agent.utils import (
     resolve_urls,
 )
 
-load_dotenv()
-
-if os.getenv("DASHSCOPE_API_KEY") is None:
-    raise ValueError("DASHSCOPE_API_KEY is not set")
-
-# Initialize DashScope
-dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
-
 
 # Nodes
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
     """LangGraph node that generates search queries based on the User's question.
 
-    Uses Qwen model to create an optimized search queries for web research based on
-    the User's question.
+    Uses ChatTongyi with structured output to create optimized search queries for web research.
 
     Args:
         state: Current graph state containing the User's question
@@ -60,59 +51,26 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # init Qwen model - 使用DashScope Generation直接调用
     try:
-        from dashscope import Generation
-        import json
-    except ImportError as e:
-        print(f"DashScope导入失败: {e}")
-        print("请安装: pip install dashscope")
-        return {"search_query": [get_research_topic(state["messages"])]}
-
-    # Format the prompt
-    current_date = get_current_date()
-    formatted_prompt = query_writer_instructions.format(
-        current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
-        number_queries=state["initial_search_query_count"],
-    )
-    
-    # Generate the search queries - 使用DashScope Generation直接调用
-    try:
-        response = Generation.call(
-            model=configurable.query_generator_model,
-            prompt=formatted_prompt,
-            temperature=1.0
+        # 初始化ChatTongyi模型
+        llm = ChatTongyi(model=configurable.query_generator_model)
+        
+        # 创建结构化LLM
+        structured_llm = llm.with_structured_output(SearchQueryList)
+        
+        # Format the prompt
+        current_date = get_current_date()
+        formatted_prompt = query_writer_instructions.format(
+            current_date=current_date,
+            research_topic=get_research_topic(state["messages"]),
+            number_queries=state["initial_search_query_count"],
         )
         
-        if response.status_code == 200:
-            content = response.output.text
-            
-            # 尝试解析JSON格式的输出
-            try:
-                # 查找JSON部分
-                start_idx = content.find('{')
-                end_idx = content.rfind('}') + 1
-                
-                if start_idx >= 0 and end_idx > start_idx:
-                    json_str = content[start_idx:end_idx]
-                    parsed_result = json.loads(json_str)
-                    queries = parsed_result.get('query', [])
-                    if isinstance(queries, list) and queries:
-                        return {"search_query": queries}
-                
-                # 如果JSON解析失败，创建基于主题的查询
-                topic = get_research_topic(state["messages"])
-                return {"search_query": [topic]}
-                
-            except json.JSONDecodeError:
-                # JSON解析失败，使用主题作为查询
-                topic = get_research_topic(state["messages"])
-                return {"search_query": [topic]}
-        else:
-            print(f"DashScope API调用失败: {response.message}")
-            return {"search_query": [get_research_topic(state["messages"])]}
-            
+        # 调用结构化输出
+        result: SearchQueryList = structured_llm.invoke(formatted_prompt)
+        
+        return {"search_query": result.query}
+        
     except Exception as e:
         print(f"在生成查询过程中发生错误: {e}")
         # Fallback: create a simple query from the topic
@@ -131,9 +89,9 @@ def continue_to_web_research(state: QueryGenerationState):
 
 
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using DashScope.
+    """LangGraph node that performs web research using ChatTongyi with structured output.
 
-    Executes text generation using DashScope API in combination with Qwen model.
+    Executes web research using ChatTongyi model with structured output format.
 
     Args:
         state: Current graph state containing the search query and research loop count
@@ -142,45 +100,54 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
     Returns:
         Dictionary with state update, including sources_gathered, research_loop_count, and web_research_results
     """
-    # Configure
     configurable = Configuration.from_runnable_config(config)
-    formatted_prompt = web_searcher_instructions.format(
-        current_date=get_current_date(),
-        research_topic=state["search_query"],
-    )
+    
+    try:
+        # 初始化ChatTongyi模型
+        llm = ChatTongyi(model=configurable.query_generator_model)
+        
+        # 创建结构化LLM
+        structured_llm = llm.with_structured_output(WebSearchResult)
+        
+        formatted_prompt = web_searcher_instructions.format(
+            current_date=get_current_date(),
+            research_topic=state["search_query"],
+        )
 
-    # Use DashScope for text generation (web search functionality simplified for now)
-    from dashscope import Generation
-    
-    response = Generation.call(
-        model=configurable.query_generator_model,
-        prompt=formatted_prompt,
-        temperature=0,
-    )
-    
-    # Simplified response handling (without web search for now)
-    if response.status_code == 200:
-        response_text = response.output.text
-        # For now, create a simple mock citation structure
-        citations = []
+        # 调用结构化输出
+        result: WebSearchResult = structured_llm.invoke(formatted_prompt)
+        
+        # 转换sources格式以匹配现有的数据结构
         sources_gathered = []
-        modified_text = response_text
-    else:
-        raise Exception(f"DashScope API error: {response.message}")
+        for source in result.sources:
+            sources_gathered.append({
+                "url": source.get("url", ""),
+                "title": source.get("title", ""),
+                "short_url": source.get("url", ""),
+                "value": source.get("url", "")
+            })
 
-    return {
-        "sources_gathered": sources_gathered,
-        "search_query": [state["search_query"]],
-        "web_research_result": [modified_text],
-    }
+        return {
+            "sources_gathered": sources_gathered,
+            "search_query": [state["search_query"]],
+            "web_research_result": [result.search_content],
+        }
+        
+    except Exception as e:
+        print(f"在网络研究过程中发生错误: {e}")
+        # Fallback response
+        return {
+            "sources_gathered": [],
+            "search_query": [state["search_query"]],
+            "web_research_result": [f"搜索查询: {state['search_query']} 的结果暂时无法获取。"],
+        }
 
 
 def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
     """LangGraph node that identifies knowledge gaps and generates potential follow-up queries.
 
     Analyzes the current summary to identify areas for further research and generates
-    potential follow-up queries. Uses structured output to extract
-    the follow-up query in JSON format.
+    potential follow-up queries using ChatTongyi with structured output.
 
     Args:
         state: Current graph state containing the running summary and research topic
@@ -194,69 +161,28 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
     state["research_loop_count"] = state.get("research_loop_count", 0) + 1
     reasoning_model = state.get("reasoning_model", configurable.reflection_model)
 
-    # Format the prompt
-    current_date = get_current_date()
-    formatted_prompt = reflection_instructions.format(
-        current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
-        summaries="\n\n---\n\n".join(state["web_research_result"]),
-    )
-    # init Reasoning Model - 使用DashScope Generation直接调用
     try:
-        from dashscope import Generation
-        import json
-    except ImportError as e:
-        print(f"DashScope导入失败: {e}")
-        print("请安装: pip install dashscope")
-        return {
-            "is_sufficient": True,
-            "knowledge_gap": "",
-            "follow_up_queries": [],
-            "research_loop_count": state["research_loop_count"],
-            "number_of_ran_queries": len(state["search_query"]),
-        }
-    
-        # Generate reflection - 使用DashScope Generation直接调用
-    try:
-        response = Generation.call(
-            model=reasoning_model,
-            prompt=formatted_prompt,
-            temperature=1.0
+        # 初始化ChatTongyi模型
+        llm = ChatTongyi(model=reasoning_model)
+        
+        # 创建结构化LLM
+        structured_llm = llm.with_structured_output(Reflection)
+        
+        # Format the prompt
+        current_date = get_current_date()
+        formatted_prompt = reflection_instructions.format(
+            current_date=current_date,
+            research_topic=get_research_topic(state["messages"]),
+            summaries="\n\n---\n\n".join(state["web_research_result"]),
         )
         
-        if response.status_code == 200:
-            content = response.output.text
-            
-            # 尝试解析JSON格式的输出
-            try:
-                # 查找JSON部分
-                start_idx = content.find('{')
-                end_idx = content.rfind('}') + 1
-                
-                if start_idx >= 0 and end_idx > start_idx:
-                    json_str = content[start_idx:end_idx]
-                    parsed_result = json.loads(json_str)
-                    
-                    is_sufficient = parsed_result.get('is_sufficient', True)
-                    knowledge_gap = parsed_result.get('knowledge_gap', '')
-                    follow_up_queries = parsed_result.get('follow_up_queries', [])
-                    
-                    return {
-                        "is_sufficient": is_sufficient,
-                        "knowledge_gap": knowledge_gap,
-                        "follow_up_queries": follow_up_queries,
-                        "research_loop_count": state["research_loop_count"],
-                        "number_of_ran_queries": len(state["search_query"]),
-                    }
-                
-            except json.JSONDecodeError:
-                pass
-                
-        # 如果解析失败或API调用失败，返回默认值
+        # 调用结构化输出
+        result: Reflection = structured_llm.invoke(formatted_prompt)
+        
         return {
-            "is_sufficient": True,
-            "knowledge_gap": "",
-            "follow_up_queries": [],
+            "is_sufficient": result.is_sufficient,
+            "knowledge_gap": result.knowledge_gap,
+            "follow_up_queries": result.follow_up_queries,
             "research_loop_count": state["research_loop_count"],
             "number_of_ran_queries": len(state["search_query"]),
         }
@@ -313,52 +239,56 @@ def evaluate_research(
 def finalize_answer(state: OverallState, config: RunnableConfig):
     """LangGraph node that finalizes the research summary.
 
-    Prepares the final output by deduplicating and formatting sources, then
-    combining them with the running summary to create a well-structured
-    research report with proper citations.
+    Prepares the final output using ChatTongyi with structured output to create a well-structured
+    research report with proper citations and key points.
 
     Args:
         state: Current graph state containing the running summary and sources gathered
 
     Returns:
-        Dictionary with state update, including running_summary key containing the formatted final summary with sources
+        Dictionary with state update, including messages and sources_gathered
     """
     configurable = Configuration.from_runnable_config(config)
     reasoning_model = state.get("reasoning_model") or configurable.answer_model
 
-    # Format the prompt
-    current_date = get_current_date()
-    formatted_prompt = answer_instructions.format(
-        current_date=current_date,
-        research_topic=get_research_topic(state["messages"]),
-        summaries="\n---\n\n".join(state["web_research_result"]),
-    )
-
-    # init Reasoning Model, default to Qwen Max - 使用DashScope Generation直接调用
     try:
-        from dashscope import Generation
+        # 初始化ChatTongyi模型
+        llm = ChatTongyi(model=reasoning_model)
         
-        response = Generation.call(
-            model=reasoning_model,
-            prompt=formatted_prompt,
-            temperature=0
+        # 创建结构化LLM
+        structured_llm = llm.with_structured_output(FinalAnswer)
+        
+        # Format the prompt
+        current_date = get_current_date()
+        formatted_prompt = answer_instructions.format(
+            current_date=current_date,
+            research_topic=get_research_topic(state["messages"]),
+            summaries="\n---\n\n".join(state["web_research_result"]),
         )
+
+        # 调用结构化输出
+        result: FinalAnswer = structured_llm.invoke(formatted_prompt)
         
-        if response.status_code == 200:
-            result_content = response.output.text
-        else:
-            print(f"DashScope API调用失败: {response.message}")
-            result_content = "抱歉，由于技术问题无法生成详细答案。"
-            
+        result_content = result.answer
+        
+        # 如果有关键要点，添加到答案中
+        if result.summary_points:
+            result_content += "\n\n## 关键要点：\n"
+            for i, point in enumerate(result.summary_points, 1):
+                result_content += f"{i}. {point}\n"
+        
+        # 添加可信度信息
+        result_content += f"\n\n*答案可信度评分: {result.confidence_level}/10*"
+        
     except Exception as e:
-        print(f"无法调用DashScope或生成答案: {e}")
+        print(f"无法调用ChatTongyi或生成答案: {e}")
         # Create a simple fallback response
         result_content = "抱歉，由于技术问题无法生成详细答案。"
 
     # Replace the short urls with the original urls and add all used urls to the sources_gathered
     unique_sources = []
     for source in state["sources_gathered"]:
-        if source["short_url"] in result_content:
+        if source.get("short_url") and source["short_url"] in result_content:
             result_content = result_content.replace(
                 source["short_url"], source["value"]
             )

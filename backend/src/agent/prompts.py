@@ -16,20 +16,6 @@ query_writer_instructions = """您的目标是生成精准且多样化的网络�
 - 不要生成多个相似的查询，1个就足够了。
 - 查询应确保收集到最新的信息。当前日期是 {current_date}。
 
-格式：
-- 将您的回复格式化为包含以下两个确切键的JSON对象：
-   - "rationale": 简要解释为什么这些查询相关
-   - "query": 搜索查询列表
-
-示例：
-
-主题：去年苹果股价增长和iPhone销量增长哪个更多
-```json
-{{
-    "rationale": "为了准确回答这个比较增长的问题，我们需要苹果股票表现和iPhone销售指标的具体数据点。这些查询针对所需的精确财务信息：公司收入趋势、产品特定的销量数字，以及同一财年的股价变动以进行直接比较。",
-    "query": ["苹果2024财年总收入增长", "iPhone 2024财年销量增长", "苹果股价2024财年增长"],
-}}
-```
 
 上下文：{research_topic}"""
 
@@ -57,21 +43,6 @@ reflection_instructions = """您是分析关于"{research_topic}"的摘要的专
 
 要求：
 - 确保后续查询是自包含的，并包含网络搜索所需的必要上下文。
-
-输出格式：
-- 将响应格式化为包含以下确切键的JSON对象：
-   - "is_sufficient": true 或 false
-   - "knowledge_gap": 描述缺少的信息或需要澄清的内容
-   - "follow_up_queries": 编写一个特定问题以解决此差距
-
-示例：
-```json
-{{
-    "is_sufficient": true, // 或 false
-    "knowledge_gap": "摘要中缺少关于性能指标和基准测试的信息", // 如果is_sufficient为true则为""
-    "follow_up_queries": ["评估[特定技术]时使用的典型性能基准和指标是什么？"] // 如果is_sufficient为true则为[]
-}}
-```
 
 仔细反思以下摘要，识别知识差距并生成后续查询。然后，按照此JSON格式生成您的输出：
 

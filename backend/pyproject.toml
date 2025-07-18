@@ -11,6 +11,7 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "langgraph>=0.2.6",
     "langchain>=0.3.19",
+    "langchain-community",
     "langchain-google-genai",
     "python-dotenv>=1.0.1",
     "langgraph-sdk>=0.1.57",
