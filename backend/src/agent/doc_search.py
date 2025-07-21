@@ -1,12 +1,9 @@
 import os
 import logging
-import json
-import asyncio
-from typing import List, Dict, Any
-
-from llama_index.core import VectorStoreIndex, Settings
-from llama_index.vector_stores.milvus import MilvusVectorStore
-from llama_index.embeddings.dashscope import DashScopeEmbedding
+import numpy as np
+from typing import List, Dict, Any, Optional
+from pymilvus import MilvusClient, connections
+from dashscope import TextEmbedding
 
 # 配置常量
 DEFAULT_MODEL = "text-embedding-v3"
@@ -29,154 +26,175 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-class MilvusQueryEngine:
-    """简洁的Milvus向量查询引擎"""
+class NativeMilvusSyncEngine:
+    """原生PyMilvus同步查询引擎 - 完全同步，无异步依赖"""
     
     def __init__(self, collection_name: str = DEFAULT_COLLECTION):
-        """初始化查询引擎
-        
-        Args:
-            collection_name: Milvus集合名称
-        """
         self.collection_name = collection_name
         self.api_key = self._get_api_key()
-        self._vector_store = None
-        self._index = None
-        
-        # 设置embedding模型
-        Settings.embed_model = DashScopeEmbedding(
-            model_name=DEFAULT_MODEL,
-            api_key=self.api_key,
-            dimensions=DEFAULT_EMBEDDING_DIM
-        )
-        logger.info(f"初始化查询引擎: {collection_name}")
+        self._client: Optional[MilvusClient] = None
+        logger.info(f"初始化原生同步查询引擎: {collection_name}")
     
     def _get_api_key(self) -> str:
-        """获取API密钥"""
         api_key = os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
             raise ValueError("环境变量 DASHSCOPE_API_KEY 未设置")
         return api_key
     
-    async def _ensure_connected(self):
-        """确保连接已建立"""
-        if self._vector_store is None:
-            await self._connect()
+    def _ensure_connected(self):
+        """确保客户端连接"""
+        if self._client is None:
+            self._connect()
     
-    async def _connect(self):
-        """连接到Milvus"""
+    def _connect(self):
+        """建立同步连接"""
         try:
-            self._vector_store = MilvusVectorStore(
+            self._client = MilvusClient(
                 uri=os.getenv("MILVUS_URI", DEFAULT_MILVUS_CONFIG["uri"]),
-                token=os.getenv("MILVUS_TOKEN", DEFAULT_MILVUS_CONFIG["token"]),
-                collection_name=self.collection_name,
-                dim=DEFAULT_EMBEDDING_DIM,
-                overwrite=False,
-                store_metadata=True
+                token=os.getenv("MILVUS_TOKEN", DEFAULT_MILVUS_CONFIG["token"])
             )
-            self._index = VectorStoreIndex.from_vector_store(self._vector_store)
-            logger.info("Milvus连接成功")
+            # 检查集合是否存在
+            if not self._client.has_collection(self.collection_name):
+                logger.warning(f"集合 {self.collection_name} 不存在")
+            else:
+                logger.info(f"成功连接到Milvus集合: {self.collection_name}")
         except Exception as e:
             logger.error(f"Milvus连接失败: {e}")
             raise
     
-    async def query(self, text: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """查询向量数据库
-        
-        Args:
-            text: 查询文本
-            top_k: 返回结果数量
+    def _get_embedding(self, text: str) -> List[float]:
+        """获取文本嵌入向量"""
+        try:
+            response = TextEmbedding.call(
+                model=DEFAULT_MODEL,
+                input=text,
+                api_key=self.api_key
+            )
             
-        Returns:
-            标准格式的查询结果
-        """
+            if response.status_code == 200:
+                embeddings = response.output['embeddings']
+                if embeddings and len(embeddings) > 0:
+                    return embeddings[0]['embedding']
+            
+            raise ValueError(f"获取嵌入向量失败: {response}")
+            
+        except Exception as e:
+            logger.error(f"嵌入向量生成失败: {e}")
+            raise
+    
+    def query(self, text: str, top_k: int = 3) -> List[Dict[str, Any]]:
+        """同步查询向量数据库"""
         if not text or not text.strip():
             raise ValueError("查询文本不能为空")
         
         text = text.strip()
-        logger.info(f"查询: '{text}' (top_k={top_k})")
+        logger.info(f"原生同步查询: '{text}' (top_k={top_k})")
         
-        await self._ensure_connected()
+        self._ensure_connected()
         
         try:
-            # 执行查询
-            retriever = self._index.as_retriever(similarity_top_k=top_k)
-            results = await retriever.aretrieve(text)
+            # 1. 获取查询向量
+            query_vector = self._get_embedding(text)
             
-            if not results:
+            # 2. 执行向量搜索
+            search_results = self._client.search(
+                collection_name=self.collection_name,
+                data=[query_vector],
+                anns_field="embedding",  # 向量字段名
+                limit=top_k,
+                output_fields=["*"]  # 返回所有字段
+            )
+            
+            if not search_results or not search_results[0]:
                 logger.warning("未找到匹配结果")
                 return []
             
-            # 格式化结果
-            return [self._format_result(result, i) for i, result in enumerate(results)]
+            # 3. 格式化结果
+            results = []
+            for i, hit in enumerate(search_results[0]):
+                formatted_result = self._format_result(hit, i)
+                results.append(formatted_result)
+            
+            logger.info(f"查询完成，返回{len(results)}个结果")
+            return results
             
         except Exception as e:
-            logger.error(f"查询失败: {e}")
+            logger.error(f"原生同步查询失败: {e}")
             raise
     
-    def _format_result(self, result, index: int) -> Dict[str, Any]:
+    def _format_result(self, hit, index: int) -> Dict[str, Any]:
         """格式化单个查询结果"""
-        node = result.node
-        metadata = getattr(node, 'metadata', {})
-        text = getattr(node, 'text', '')
+        entity = hit.get('entity', {})
+        
+        # 提取元数据
+        file_name = entity.get('file_name', f'Document_{index}')
+        text_content = entity.get('text', '')
+        doc_id = entity.get('doc_id', f'doc_{index}')
         
         return {
             "source": "milvus",
-            "title": metadata.get("file_name", f"Document_{index}"),
-            "url": f"internal://doc_{metadata.get('doc_id', index)}",
-            "snippet": text[:200] + "..." if len(text) > 200 else text,
-            "summary": text,
-            "score": getattr(result, 'score', 0.0),
+            "title": file_name,
+            "url": f"internal://doc_{doc_id}",
+            "snippet": text_content[:200] + "..." if len(text_content) > 200 else text_content,
+            "summary": text_content,
+            "score": float(hit.get('distance', 0.0)),  # 注意：distance越小表示越相似
             "metadata": {
-                "node_id": getattr(node, 'id_', 'unknown'),
-                "node_index": metadata.get("node_index"),
-                "doc_id": metadata.get("doc_id"),
-                "file_name": metadata.get("file_name")
+                "doc_id": doc_id,
+                "file_name": file_name,
+                "distance": hit.get('distance', 0.0)
             }
         }
+    
+    def close(self):
+        """关闭连接"""
+        if self._client:
+            self._client.close()
+            self._client = None
 
 
-# 便捷查询函数
-async def query_async(text: str, top_k: int = 3, collection: str = DEFAULT_COLLECTION) -> List[Dict[str, Any]]:
-    """异步查询接口"""
-    engine = MilvusQueryEngine(collection)
-    return await engine.query(text, top_k)
+# 全局引擎实例（单例模式）
+_global_engine = None
+
+def get_engine(collection_name: str = DEFAULT_COLLECTION) -> NativeMilvusSyncEngine:
+    """获取全局引擎实例"""
+    global _global_engine
+    if _global_engine is None or _global_engine.collection_name != collection_name:
+        _global_engine = NativeMilvusSyncEngine(collection_name)
+    return _global_engine
+
+
+# 便捷同步查询函数
+def query_sync(text: str, top_k: int = 3, collection: str = DEFAULT_COLLECTION) -> List[Dict[str, Any]]:
+    """完全同步的查询接口 - 推荐使用"""
+    engine = get_engine(collection)
+    return engine.query(text, top_k)
 
 
 def query(text: str, top_k: int = 3, collection: str = DEFAULT_COLLECTION) -> List[Dict[str, Any]]:
     """同步查询接口"""
-    try:
-        import nest_asyncio
-        nest_asyncio.apply()
-        return asyncio.run(query_async(text, top_k, collection))
-    except Exception as e:
-        logger.error(f"查询失败: {e}")
-        raise
-
-
-# 向后兼容接口
-def query_documents(query_text: str, top_k: int = 3, collection_name: str = DEFAULT_COLLECTION) -> List[Dict[str, Any]]:
-    """查询文档接口（向后兼容）"""
-    return query(query_text, top_k, collection_name)
-
-
-async def query_documents_async(query_text: str, top_k: int = 3, collection_name: str = DEFAULT_COLLECTION) -> List[Dict[str, Any]]:
-    """异步查询文档接口（向后兼容）"""
-    return await query_async(query_text, top_k, collection_name)
+    return query_sync(text, top_k, collection)
 
 
 def doc_search(query_text: str, top_k: int = 3) -> List[Dict[str, Any]]:
-    """文档搜索接口（向后兼容）"""
-    return query(query_text, top_k)
+    """文档搜索接口"""
+    return query_sync(query_text, top_k)
+
+
+# 保留异步接口以兼容（实际使用同步实现）
+async def query_async(text: str, top_k: int = 3, collection: str = DEFAULT_COLLECTION) -> List[Dict[str, Any]]:
+    """异步查询接口（内部使用同步实现）"""
+    return query_sync(text, top_k, collection)
 
 
 if __name__ == "__main__":
-    async def test():
-        """测试函数"""
+    def test():
         try:
-            results = await query_async("测试查询", top_k=2)
-            print(json.dumps(results, indent=2, ensure_ascii=False))
+            print("测试原生Milvus同步查询...")
+            results = query_sync("测试查询", top_k=2)
+            print(f"找到 {len(results)} 个结果")
+            for i, result in enumerate(results):
+                print(f"{i+1}. {result['title']} (score: {result['score']:.3f})")
         except Exception as e:
             logger.error(f"测试失败: {e}")
     
-    asyncio.run(test())
+    test()

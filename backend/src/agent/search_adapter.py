@@ -4,59 +4,49 @@ from typing import List, Dict, Any
 from langchain_core.runnables import RunnableConfig
 from langchain_community.chat_models import ChatTongyi
 
-from agent.tools_and_schemas import WebSearchResult
+from agent.tools_and_schemas import SearchResult
 from agent.state import SearchState, OverallState
-from agent.doc_search import query_async
+from agent.doc_search import query_sync  # 使用新的同步接口
 from agent.configuration import Configuration
 from agent.prompts import get_current_date
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
+MIN_SCORE = 0.5
+
 # 知识库内容适配的提示词
-KNOWLEDGE_BASE_ADAPTER_PROMPT = """基于知识库检索结果，为用户查询"{research_topic}"生成结构化的研究报告。
+KNOWLEDGE_BASE_ADAPTER_PROMPT = """你将获得与用户查询“{research_topic}”相关的知识库检索内容。
 
 ## 检索到的知识库内容：
 {retrieved_content}
 
 ## 你的任务：
-1. 仔细分析上述知识库内容
-2. 针对用户查询"{research_topic}"进行智能整合和总结
-3. 生成结构化的研究报告，包含：
-   - search_content: 基于检索内容的综合分析和回答
-   - key_findings: 从内容中提取所有的关键信息，不要遗漏任何和问题相关的信息
-   - sources: 内容来源信息
+- 仔细阅读所有检索内容，筛选、保留与用户问题高度相关的所有信息，不能遗漏任何与问题相关的要点或细节。
+- 对相关内容进行归纳、整合和完善，形成结构化、条理清晰的研究报告。
+- 不要遗漏任何与问题相关的信息，确保所有有用内容都被覆盖。
+- 不相关的信息无需包含在报告中。
 
-## 要求：
-- 内容要有针对性，直接回答用户的查询
-- 整合多个文档片段的信息，避免简单拼接
-- 关键发现要有洞察性，不只是统计信息
-- 保持客观性，基于检索内容进行分析
-- 如果内容不足以完全回答查询，明确指出限制
+## 输出要求：
+- 保持客观、中立，仅基于检索内容进行分析，不要引入外部知识。
+- 如果检索内容不足以完全回答问题，请明确指出哪些方面信息不足。
 
 当前日期: {current_date}
 """
 
 
 class MilvusAdapter:
-    """Milvus查询结果智能适配器 - 支持AI/非AI两种模式"""
+    """Milvus查询结果智能适配器 - 完全同步版本"""
     
     @staticmethod
-    async def search(query_text: str, top_k: int = 5, collection: str = "demo", use_ai: bool = True) -> WebSearchResult:
-        """执行Milvus查询并适配结果
-        
-        Args:
-            query_text: 查询文本
-            top_k: 返回结果数量
-            collection: 集合名称
-            use_ai: 是否使用AI智能适配
-        """
+    def search(query_text: str, top_k: int = 5, collection: str = "demo", use_ai: bool = True) -> SearchResult:
+        """执行Milvus查询并适配结果 - 完全同步版本"""
         try:
-            # 1. 执行Milvus查询
-            results = await query_async(query_text, top_k, collection)
+            # 使用原生同步查询
+            results = query_sync(query_text, top_k, collection)
             
             if not results:
-                return WebSearchResult(
+                return SearchResult(
                     search_content=f"未在知识库中找到关于'{query_text}'的相关信息。",
                     sources=[],
                     key_findings=["知识库中暂无相关内容"]
@@ -65,44 +55,51 @@ class MilvusAdapter:
             # 2. 根据开关选择适配方式
             if use_ai:
                 logger.info(f"使用AI适配模式处理{len(results)}个结果")
-                return await MilvusAdapter._ai_adapt_results(results, query_text)
+                return MilvusAdapter._ai_adapt_results(results, query_text)
             else:
                 logger.info(f"使用非AI适配模式处理{len(results)}个结果")
                 return MilvusAdapter._simple_adapt_results(results, query_text)
                 
         except Exception as e:
             logger.error(f"Milvus查询失败: {e}")
-            return WebSearchResult(
+            return SearchResult(
                 search_content=f"知识库查询'{query_text}'失败: {str(e)}",
                 sources=[],
                 key_findings=["查询过程出现技术问题"]
             )
     
     @staticmethod
-    async def _ai_adapt_results(results: List[Dict], query_text: str) -> WebSearchResult:
-        """AI智能适配"""
+    def _ai_adapt_results(results: List[Dict], query_text: str) -> SearchResult:
+        """AI智能适配 - 同步版本"""
         try:
             # 准备检索内容
             retrieved_content = MilvusAdapter._format_retrieved_content(results)
             
             # 初始化大模型
             llm = ChatTongyi(model="qwen-max")
-            structured_llm = llm.with_structured_output(WebSearchResult)
+            structured_llm = llm.with_structured_output(SearchResult)
             
             # 构建提示词
-            prompt = KNOWLEDGE_BASE_ADAPTER_PROMPT.format(
-                research_topic=query_text,
-                retrieved_content=retrieved_content,
-                current_date=get_current_date()
-            )
+            prompt = f"""基于知识库检索结果，为用户查询"{query_text}"生成结构化的研究报告。
+
+## 检索到的知识库内容：
+{retrieved_content}
+
+## 你的任务：
+1. 仔细分析上述知识库内容
+2. 针对用户查询"{query_text}"进行智能整合和总结
+3. 生成结构化的研究报告
+
+当前日期: {get_current_date()}
+"""
             
             # AI生成结构化结果
-            ai_result: WebSearchResult = structured_llm.invoke(prompt)
+            ai_result: SearchResult = structured_llm.invoke(prompt)
             
             # 补充sources信息
             enhanced_sources = MilvusAdapter._enhance_sources(ai_result.sources, results)
             
-            return WebSearchResult(
+            return SearchResult(
                 search_content=ai_result.search_content,
                 sources=enhanced_sources,
                 key_findings=ai_result.key_findings
@@ -112,18 +109,67 @@ class MilvusAdapter:
             logger.error(f"AI适配失败，回退到简单适配: {e}")
             return MilvusAdapter._simple_adapt_results(results, query_text)
     
+
     @staticmethod
-    def _simple_adapt_results(results: List[Dict], query_text: str) -> WebSearchResult:
-        """非AI适配 - 基于规则的智能整合"""
-        # 按相似度排序
-        sorted_results = sorted(results, key=lambda x: x.get("score", 0), reverse=True)
+    def _filter_summary(summary: str, query_text: str) -> str:
+        """使用LLM对summary进行二次提炼，仅保留与query_text高度相关的内容"""
+        llm = ChatTongyi(model="qwen-max")
+        prompt = f"""你将获得与用户查询“{query_text}”相关的知识库检索内容摘要。请你仔细阅读内容，仅保留与该查询高度相关、最有价值的信息，去除无关或冗余部分，并用简洁、专业的语言进行二次提炼和总结，输出精炼后的内容。
+请直接输出优化后的摘要，不要添加额外说明。  
+
+## 检索到的知识库内容：
+{summary}
+
+"""
+        result = llm.invoke(prompt)
+        return result
+
+    @staticmethod
+    def _simple_adapt_results(results: List[Dict], query_text: str) -> SearchResult:
+        """非AI适配 - 基于阈值的简单整合"""
+        # 筛选高相关文档
+        filtered_results = [r for r in results if r.get("score", 0) >= MIN_SCORE]
         
-        # 生成结构化内容
-        search_content = MilvusAdapter._build_structured_content(sorted_results, query_text)
-        sources = MilvusAdapter._extract_sources(sorted_results)
-        key_findings = MilvusAdapter._extract_smart_findings(sorted_results, query_text)
+        if not filtered_results:
+            return SearchResult(
+                search_content=f"未找到与'{query_text}'高度相关的信息（阈值>{MIN_SCORE}）。",
+                sources=[],
+                key_findings=["无高相关内容"]
+            )
         
-        return WebSearchResult(
+        # 生成内容摘要
+        content_parts = [f"针对查询'{query_text}'，以下为相关性高于{MIN_SCORE}的知识库内容：\n"]
+        
+        for i, result in enumerate(filtered_results, 1):
+            title = result.get("title", f"文档{i}")
+            summary = result.get("summary", "")
+            score = result.get("score", 0.0)
+            if score < MIN_SCORE:
+                continue
+            summary = MilvusAdapter._filter_summary(summary, query_text)
+            content_parts.append(f"**{i}. {title}** (相关度: {score:.2f})")
+            content_parts.append(f"{summary}\n")
+        
+        content_parts.append(f"共返回{len(filtered_results)}个高相关文档片段。")
+        
+        search_content = "\n\n".join(content_parts)
+        
+        sources = [
+            {
+                "url": r.get("url", ""),
+                "title": r.get("title", ""),
+                "score": r.get("score", 0.0)
+            }
+            for r in filtered_results
+        ]
+        
+        key_findings = [
+            f"共返回{len(filtered_results)}个高相关文档片段",
+            f"相关性阈值: {MIN_SCORE}",
+            f"平均相关度: {sum(r.get('score', 0) for r in filtered_results) / len(filtered_results):.2f}"
+        ]
+        
+        return SearchResult(
             search_content=search_content,
             sources=sources,
             key_findings=key_findings
@@ -143,14 +189,16 @@ class MilvusAdapter:
         content_parts = [f"针对查询'{query_text}'，基于知识库分析如下：\n"]
         
         # 主要内容
-        for i, result in enumerate(results[:3], 1):  # 取前3个最相关的
+        for i, result in enumerate(results):
             title = result.get("title", f"文档{i}")
             summary = result.get("summary", "")
             score = result.get("score", 0.0)
+            if score < MIN_SCORE:
+                continue
             
             if summary:
                 # 智能截取关键部分
-                key_content = MilvusAdapter._extract_key_content(summary, query_text)
+                key_content = summary
                 content_parts.append(f"**{i}. {title}** (相关度: {score:.2f})")
                 content_parts.append(f"{key_content}\n")
         
@@ -162,27 +210,9 @@ class MilvusAdapter:
         else:
             content_parts.append("**总结**: 知识库中信息与查询的相关性较低，建议调整查询词。")
         
-        return "\n".join(content_parts)
+        return "\n\n".join(content_parts)
     
-    @staticmethod
-    def _extract_key_content(text: str, query: str) -> str:
-        """从文本中提取与查询相关的关键内容"""
-        # 简单的关键词匹配逻辑
-        query_words = query.lower().split()
-        sentences = text.split('。')
-        
-        relevant_sentences = []
-        for sentence in sentences:
-            if any(word in sentence.lower() for word in query_words):
-                relevant_sentences.append(sentence.strip())
-        
-        if relevant_sentences:
-            # 返回最相关的句子，限制长度
-            key_content = '。'.join(relevant_sentences[:3])
-            return key_content[:300] + "..." if len(key_content) > 300 else key_content
-        else:
-            # 如果没有匹配的句子，返回前300字符
-            return text[:300] + "..." if len(text) > 300 else text
+
     
     @staticmethod
     def _extract_sources(results: List[Dict]) -> List[dict]:
@@ -284,16 +314,15 @@ class MilvusAdapter:
             return MilvusAdapter._extract_sources(original_results)
 
 
-def milvus_research(state: SearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
-    """Milvus知识库研究节点"""
+def milvus_research_sync(state: SearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
+    """Milvus知识库研究节点 - 完全同步版本"""
     search_query = state["search_query"]
     mode = "AI智能" if use_ai else "规则化"
     logger.info(f"Milvus {mode}研究: {search_query}")
     
     try:
-        import nest_asyncio
-        nest_asyncio.apply()
-        result = asyncio.run(MilvusAdapter.search(search_query, top_k=10, use_ai=use_ai))
+        # 使用完全同步的接口
+        result = MilvusAdapter.search(search_query, top_k=10, use_ai=use_ai)
         
         # 转换为graph期望格式
         sources_gathered = [
@@ -327,7 +356,7 @@ def milvus_research(state: SearchState, config: RunnableConfig, use_ai: bool = T
 
 def hybrid_research(state: SearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
     """混合研究节点"""
-    milvus_result = milvus_research(state, config, use_ai)
+    milvus_result = milvus_research_sync(state, config, use_ai)
     
     # 检查结果质量
     if (milvus_result["sources_gathered"] and 
@@ -348,16 +377,9 @@ def hybrid_research(state: SearchState, config: RunnableConfig, use_ai: bool = T
 
 
 # 便捷接口
-async def search_kb(query: str, top_k: int = 5, collection: str = "demo", use_ai: bool = True) -> WebSearchResult:
-    """便捷的知识库搜索接口"""
-    return await MilvusAdapter.search(query, top_k, collection, use_ai)
-
-
-def search_kb_sync(query: str, top_k: int = 5, collection: str = "demo", use_ai: bool = True) -> WebSearchResult:
+def search_kb_sync(query: str, top_k: int = 5, collection: str = "demo", use_ai: bool = True) -> SearchResult:
     """同步版本的知识库搜索"""
-    import nest_asyncio
-    nest_asyncio.apply()
-    return asyncio.run(search_kb(query, top_k, collection, use_ai))
+    return MilvusAdapter.search(query, top_k, collection, use_ai)
 
 
 if __name__ == "__main__":
@@ -368,7 +390,7 @@ if __name__ == "__main__":
         # print(f"AI关键发现数: {len(result_ai.key_findings)}")
         
         print("\n=== 非AI适配模式 ===")
-        result_simple = await search_kb("违法裁员的类型有哪些？", 10, use_ai=False)
+        result_simple = await search_kb_sync("违法裁员的类型有哪些？", 10, use_ai=False)
         print(f"非AI内容: {(result_simple.search_content)}")
         print(f"非AI关键发现数: {len(result_simple.key_findings)}")
         

@@ -1,6 +1,6 @@
 import os
 
-from agent.tools_and_schemas import SearchQueryList, Reflection, WebSearchResult, FinalAnswer
+from agent.tools_and_schemas import SearchQueryList, Reflection, SearchResult, FinalAnswer
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langgraph.types import Send
@@ -91,21 +91,13 @@ def continue_to_web_research(state: QueryGenerationState):
 
 
 def doc_research(state: SearchState, config: RunnableConfig) -> OverallState:
-    """
-        LangGraph节点：知识库文档检索（非AI适配模式）
-
-        Args:
-            state: 当前图状态，包含search_query等信息
-            config: 可选的运行配置
-
-        Returns:
-            OverallState: 包含sources_gathered, search_query, web_research_result等
-    """
+    """LangGraph节点：知识库文档检索（同步版本）"""
     try:
-        # 调用知识库同步检索（非AI适配模式）
-        result: WebSearchResult = search_kb_sync(state["search_query"], 10, use_ai=True)
+        # 使用完全同步的接口
+        from agent.search_adapter import search_kb_sync
+        result: SearchResult = search_kb_sync(state["search_query"], 10, use_ai=False)
         
-        # 转换sources格式以匹配现有的数据结构
+        # 转换sources格式
         sources_gathered = []
         for source in result.sources:
             sources_gathered.append({
@@ -122,7 +114,6 @@ def doc_research(state: SearchState, config: RunnableConfig) -> OverallState:
         }
     except Exception as e:
         print(f"知识库检索失败: {e}")
-        # Fallback: 返回空结果
         return {
             "sources_gathered": [],
             "search_query": [state["search_query"]],
@@ -149,7 +140,7 @@ def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
         llm = ChatTongyi(model=configurable.query_generator_model)
         
         # 创建结构化LLM
-        structured_llm = llm.with_structured_output(WebSearchResult)
+        structured_llm = llm.with_structured_output(SearchResult)
         
         formatted_prompt = web_searcher_instructions.format(
             current_date=get_current_date(),
@@ -157,7 +148,7 @@ def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
         )
 
         # 调用结构化输出
-        result: WebSearchResult = structured_llm.invoke(formatted_prompt)
+        result: SearchResult = structured_llm.invoke(formatted_prompt)
         
         # 转换sources格式以匹配现有的数据结构
         sources_gathered = []

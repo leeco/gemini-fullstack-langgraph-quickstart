@@ -7,7 +7,7 @@
 import os
 from dotenv import load_dotenv
 from langchain_community.chat_models import ChatTongyi
-from src.agent.tools_and_schemas import SearchQueryList, Reflection, WebSearchResult, FinalAnswer
+from src.agent.tools_and_schemas import SearchQueryList, Reflection, SearchResult, FinalAnswer
 
 # 加载环境变量
 load_dotenv()
@@ -50,7 +50,7 @@ def test_web_search_result():
     
     try:
         llm = ChatTongyi(model="qwen-max")
-        structured_llm = llm.with_structured_output(WebSearchResult)
+        structured_llm = llm.with_structured_output(SearchResult)
         
         prompt = """进行有针对性的网络搜索，收集关于"人工智能在医疗领域的应用"的最新、可信信息。
 
@@ -65,7 +65,7 @@ def test_web_search_result():
    - "sources": 信息来源列表，每个源包含url和title字段（如果无法获取真实源，可以为空列表）
    - "key_findings": 从搜索内容中提取的3-5个关键发现点列表"""
 
-        result: WebSearchResult = structured_llm.invoke(prompt)
+        result: SearchResult = structured_llm.invoke(prompt)
         print(f"搜索内容: {result.search_content[:200]}...")
         print(f"信息源数量: {len(result.sources)}")
         print(f"关键发现: {result.key_findings}")

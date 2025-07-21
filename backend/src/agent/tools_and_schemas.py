@@ -23,9 +23,9 @@ class Reflection(BaseModel):
     )
 
 
-class WebSearchResult(BaseModel):
+class SearchResult(BaseModel):
     """网络搜索结果的结构化输出"""
-    search_content: str = Field(description="搜索得到的内容摘要")
+    search_content: str = Field(description="搜索得到的内容摘要，不要遗漏任何和问题相关的信息")
     sources: List[dict] = Field(description="信息来源列表，包含url和标题", default=[])
     key_findings: List[str] = Field(description="关键发现列表", default=[])
 
