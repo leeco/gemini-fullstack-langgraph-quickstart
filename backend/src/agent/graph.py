@@ -8,12 +8,13 @@ from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from langchain_core.runnables import RunnableConfig
 from langchain_community.chat_models import ChatTongyi
+from agent.search_adapter import search_kb_sync
 
 from agent.state import (
     OverallState,
     QueryGenerationState,
     ReflectionState,
-    WebSearchState,
+    SearchState,
 )
 from agent.configuration import Configuration
 from agent.prompts import (
@@ -88,7 +89,48 @@ def continue_to_web_research(state: QueryGenerationState):
     ]
 
 
-def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
+
+def doc_research(state: SearchState, config: RunnableConfig) -> OverallState:
+    """
+        LangGraph节点：知识库文档检索（非AI适配模式）
+
+        Args:
+            state: 当前图状态，包含search_query等信息
+            config: 可选的运行配置
+
+        Returns:
+            OverallState: 包含sources_gathered, search_query, web_research_result等
+    """
+    try:
+        # 调用知识库同步检索（非AI适配模式）
+        result: WebSearchResult = search_kb_sync(state["search_query"], 10, use_ai=True)
+        
+        # 转换sources格式以匹配现有的数据结构
+        sources_gathered = []
+        for source in result.sources:
+            sources_gathered.append({
+                "url": source.get("url", ""),
+                "title": source.get("title", ""),
+                "short_url": source.get("url", ""),
+                "value": source.get("url", "")
+            })
+
+        return {
+            "sources_gathered": sources_gathered,
+            "search_query": [state["search_query"]],
+            "web_research_result": [result.search_content],
+        }
+    except Exception as e:
+        print(f"知识库检索失败: {e}")
+        # Fallback: 返回空结果
+        return {
+            "sources_gathered": [],
+            "search_query": [state["search_query"]],
+            "web_research_result": [f"知识库检索失败: {str(e)}"],
+        }
+
+
+def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
     """LangGraph node that performs web research using ChatTongyi with structured output.
 
     Executes web research using ChatTongyi model with structured output format.
@@ -305,7 +347,8 @@ builder = StateGraph(OverallState, config_schema=Configuration)
 
 # Define the nodes we will cycle between
 builder.add_node("generate_query", generate_query)
-builder.add_node("web_research", web_research)
+# builder.add_node("web_research", web_research)
+builder.add_node("web_research", doc_research)
 builder.add_node("reflection", reflection)
 builder.add_node("finalize_answer", finalize_answer)
 

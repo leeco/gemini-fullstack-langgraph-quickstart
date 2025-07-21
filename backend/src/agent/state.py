@@ -38,7 +38,7 @@ class QueryGenerationState(TypedDict):
     search_query: list[Query]
 
 
-class WebSearchState(TypedDict):
+class SearchState(TypedDict):
     search_query: str
     id: str
 

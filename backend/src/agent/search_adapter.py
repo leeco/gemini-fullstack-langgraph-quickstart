@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_community.chat_models import ChatTongyi
 
 from agent.tools_and_schemas import WebSearchResult
-from agent.state import WebSearchState, OverallState
+from agent.state import SearchState, OverallState
 from agent.doc_search import query_async
 from agent.configuration import Configuration
 from agent.prompts import get_current_date
@@ -284,7 +284,7 @@ class MilvusAdapter:
             return MilvusAdapter._extract_sources(original_results)
 
 
-def milvus_research(state: WebSearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
+def milvus_research(state: SearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
     """Milvus知识库研究节点"""
     search_query = state["search_query"]
     mode = "AI智能" if use_ai else "规则化"
@@ -325,7 +325,7 @@ def milvus_research(state: WebSearchState, config: RunnableConfig, use_ai: bool 
         }
 
 
-def hybrid_research(state: WebSearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
+def hybrid_research(state: SearchState, config: RunnableConfig, use_ai: bool = True) -> OverallState:
     """混合研究节点"""
     milvus_result = milvus_research(state, config, use_ai)
     
@@ -362,19 +362,19 @@ def search_kb_sync(query: str, top_k: int = 5, collection: str = "demo", use_ai:
 
 if __name__ == "__main__":
     async def test():
-        print("=== AI适配模式 ===")
-        result_ai = await search_kb("违法裁员的类型有哪些？", 10, use_ai=True)
-        print(f"AI内容: {(result_ai.search_content)}")
-        print(f"AI关键发现数: {len(result_ai.key_findings)}")
+        # print("=== AI适配模式 ===")
+        # result_ai = await search_kb("违法裁员的类型有哪些？", 10, use_ai=True)
+        # print(f"AI内容: {(result_ai.search_content)}")
+        # print(f"AI关键发现数: {len(result_ai.key_findings)}")
         
         print("\n=== 非AI适配模式 ===")
         result_simple = await search_kb("违法裁员的类型有哪些？", 10, use_ai=False)
         print(f"非AI内容: {(result_simple.search_content)}")
         print(f"非AI关键发现数: {len(result_simple.key_findings)}")
         
-        print("\n=== 非AI适配详细结果 ===")
-        print("内容:", result_simple.search_content[:300], "...")
-        print("关键发现:", result_simple.key_findings[:3])
+        # print("\n=== 非AI适配详细结果 ===")
+        # print("内容:", result_simple.search_content[:300], "...")
+        # print("关键发现:", result_simple.key_findings[:3])
     
     asyncio.run(test())
 
