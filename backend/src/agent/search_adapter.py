@@ -72,8 +72,20 @@ class MilvusAdapter:
     def _ai_adapt_results(results: List[Dict], query_text: str) -> SearchResult:
         """AI智能适配 - 同步版本"""
         try:
+            # 先清理结果，只保留指定字段
+            cleaned_results = []
+            for r in results:
+                clean_result = {
+                    "source": r.get("source", ""),
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "summary": r.get("summary", ""),
+                    "score": r.get("score", 0.0)
+                }
+                cleaned_results.append(clean_result)
+            
             # 准备检索内容
-            retrieved_content = MilvusAdapter._format_retrieved_content(results)
+            retrieved_content = MilvusAdapter._format_retrieved_content(cleaned_results)
             
             # 初始化大模型
             llm = ChatTongyi(model="qwen-max")
@@ -97,7 +109,7 @@ class MilvusAdapter:
             ai_result: SearchResult = structured_llm.invoke(prompt)
             
             # 补充sources信息
-            enhanced_sources = MilvusAdapter._enhance_sources(ai_result.sources, results)
+            enhanced_sources = MilvusAdapter._enhance_sources(ai_result.sources, cleaned_results)
             
             return SearchResult(
                 search_content=ai_result.search_content,
@@ -115,20 +127,33 @@ class MilvusAdapter:
         """使用LLM对summary进行二次提炼，仅保留与query_text高度相关的内容"""
         llm = ChatTongyi(model="qwen-max")
         prompt = f"""你将获得与用户查询“{query_text}”相关的知识库检索内容摘要。请你仔细阅读内容，仅保留与该查询高度相关、最有价值的信息，去除无关或冗余部分，并用简洁、专业的语言进行二次提炼和总结，输出精炼后的内容。
-请直接输出优化后的摘要，不要添加额外说明。  
+                请直接输出优化后的摘要，不要添加额外说明。  
 
-## 检索到的知识库内容：
-{summary}
+                ## 检索到的知识库内容：
+                {summary}
 
-"""
+                """
+        if not summary or not summary.strip():
+            return ""
         result = llm.invoke(prompt)
-        return result
+        return result.content if hasattr(result, "content") and result.content else ""
 
     @staticmethod
     def _simple_adapt_results(results: List[Dict], query_text: str) -> SearchResult:
         """非AI适配 - 基于阈值的简单整合"""
-        # 筛选高相关文档
-        filtered_results = [r for r in results if r.get("score", 0) >= MIN_SCORE]
+        # 筛选高相关文档，并只保留指定字段
+        filtered_results = []
+        for r in results:
+            if r.get("score", 0) >= MIN_SCORE:
+                # 只保留指定的字段
+                clean_result = {
+                    "source": r.get("source", ""),
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "summary": r.get("summary", ""),
+                    "score": r.get("score", 0.0)
+                }
+                filtered_results.append(clean_result)
         
         if not filtered_results:
             return SearchResult(
@@ -144,8 +169,6 @@ class MilvusAdapter:
             title = result.get("title", f"文档{i}")
             summary = result.get("summary", "")
             score = result.get("score", 0.0)
-            if score < MIN_SCORE:
-                continue
             summary = MilvusAdapter._filter_summary(summary, query_text)
             content_parts.append(f"**{i}. {title}** (相关度: {score:.2f})")
             content_parts.append(f"{summary}\n")
@@ -156,8 +179,10 @@ class MilvusAdapter:
         
         sources = [
             {
-                "url": r.get("url", ""),
+                "source": r.get("source", ""),
                 "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "summary": r.get("summary", ""),
                 "score": r.get("score", 0.0)
             }
             for r in filtered_results
@@ -216,11 +241,13 @@ class MilvusAdapter:
     
     @staticmethod
     def _extract_sources(results: List[Dict]) -> List[dict]:
-        """提取源信息"""
+        """提取源信息，只保留指定字段"""
         return [
             {
-                "url": r.get("url", ""),
+                "source": r.get("source", ""),
                 "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "summary": r.get("summary", ""),
                 "score": r.get("score", 0.0)
             }
             for r in results
@@ -237,61 +264,25 @@ class MilvusAdapter:
         # 基础统计
         total_docs = len(results)
         avg_score = sum(r.get("score", 0) for r in results) / total_docs
-        high_score_docs = [r for r in results if r.get("score", 0) > 0.8]
-        medium_score_docs = [r for r in results if 0.6 <= r.get("score", 0) <= 0.8]
-        
-        # 生成发现
-        findings.append(f"检索到{total_docs}个相关文档，平均相关度{avg_score:.2f}")
-        
-        if high_score_docs:
-            findings.append(f"发现{len(high_score_docs)}个高度相关文档")
-            # 添加最相关文档的具体信息
-            top_doc = max(results, key=lambda x: x.get("score", 0))
-            findings.append(f"最相关文档: {top_doc.get('title', '未知')} (相关度: {top_doc.get('score', 0):.2f})")
-        
-        if medium_score_docs:
-            findings.append(f"发现{len(medium_score_docs)}个中等相关文档")
-        
-        # 内容覆盖分析
-        all_content = " ".join([r.get("summary", "") for r in results])
-        query_words = query_text.lower().split()
-        covered_words = [word for word in query_words if word in all_content.lower()]
-        
-        if covered_words:
-            findings.append(f"知识库覆盖了查询中的关键词: {', '.join(covered_words[:5])}")
-        
-        # 质量评估
-        if avg_score > 0.8:
-            findings.append("内容质量评估: 高度匹配，能够充分回答问题")
-        elif avg_score > 0.6:
-            findings.append("内容质量评估: 部分匹配，提供了相关信息")
-        else:
-            findings.append("内容质量评估: 匹配度较低，建议重新构造查询")
         
         return findings
-    
+
     @staticmethod
     def _format_retrieved_content(results: List[Dict]) -> str:
-        """格式化检索内容供AI处理"""
+        """格式化检索内容"""
         content_sections = []
         for i, result in enumerate(results, 1):
             title = result.get("title", f"文档{i}")
             summary = result.get("summary", "")
             score = result.get("score", 0.0)
-            url = result.get("url", "")
             
-            section = f"""
-=== 文档{i}: {title} ===
-相似度: {score:.3f}
-内容: {summary}
-来源: {url}
-"""
+            section = f"### 文档{i}: {title} (相关度: {score:.2f})\n{summary}"
             content_sections.append(section)
         return "\n".join(content_sections)
     
     @staticmethod
     def _enhance_sources(ai_sources: List[dict], original_results: List[Dict]) -> List[dict]:
-        """增强AI生成的sources信息"""
+        """增强AI生成的sources信息，只保留指定字段"""
         if ai_sources:
             enhanced_sources = []
             for ai_source in ai_sources:
@@ -304,8 +295,10 @@ class MilvusAdapter:
                         break
                 
                 enhanced_source = {
-                    "url": ai_source.get("url") or (matched_result.get("url") if matched_result else ""),
+                    "source": ai_source.get("source") or (matched_result.get("source") if matched_result else ""),
                     "title": ai_source.get("title") or (matched_result.get("title") if matched_result else ""),
+                    "url": ai_source.get("url") or (matched_result.get("url") if matched_result else ""),
+                    "summary": ai_source.get("summary") or (matched_result.get("summary") if matched_result else ""),
                     "score": matched_result.get("score", 0.0) if matched_result else 0.0
                 }
                 enhanced_sources.append(enhanced_source)

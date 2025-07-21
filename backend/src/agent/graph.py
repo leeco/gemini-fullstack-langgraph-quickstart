@@ -270,66 +270,37 @@ def evaluate_research(
 
 
 def finalize_answer(state: OverallState, config: RunnableConfig):
-    """LangGraph node that finalizes the research summary.
-
-    Prepares the final output using ChatTongyi with structured output to create a well-structured
-    research report with proper citations and key points.
-
-    Args:
-        state: Current graph state containing the running summary and sources gathered
-
-    Returns:
-        Dictionary with state update, including messages and sources_gathered
-    """
+    """LangGraph node that finalizes the research summary."""
     configurable = Configuration.from_runnable_config(config)
     reasoning_model = state.get("reasoning_model") or configurable.answer_model
 
-    try:
-        # 初始化ChatTongyi模型
-        llm = ChatTongyi(model=reasoning_model)
-        
-        # 创建结构化LLM
-        structured_llm = llm.with_structured_output(FinalAnswer)
-        
-        # Format the prompt
-        current_date = get_current_date()
-        formatted_prompt = answer_instructions.format(
-            current_date=current_date,
-            research_topic=get_research_topic(state["messages"]),
-            summaries="\n---\n\n".join(state["web_research_result"]),
-        )
-
-        # 调用结构化输出
-        result: FinalAnswer = structured_llm.invoke(formatted_prompt)
-        
-        result_content = result.answer
-        
-        # 如果有关键要点，添加到答案中
-        if result.summary_points:
-            result_content += "\n\n## 关键要点：\n"
-            for i, point in enumerate(result.summary_points, 1):
-                result_content += f"{i}. {point}\n"
-        
-        # 添加可信度信息
-        result_content += f"\n\n*答案可信度评分: {result.confidence_level}/10*"
-        
-    except Exception as e:
-        print(f"无法调用ChatTongyi或生成答案: {e}")
-        # Create a simple fallback response
-        result_content = "抱歉，由于技术问题无法生成详细答案。"
-
-    # Replace the short urls with the original urls and add all used urls to the sources_gathered
-    unique_sources = []
-    for source in state["sources_gathered"]:
-        if source.get("short_url") and source["short_url"] in result_content:
-            result_content = result_content.replace(
-                source["short_url"], source["value"]
-            )
-            unique_sources.append(source)
+    # 初始化模型
+    llm = ChatTongyi(model=reasoning_model)
+    structured_llm = llm.with_structured_output(FinalAnswer)
+    
+    # 限制摘要长度到25k字符
+    summaries = "\n---\n\n".join(state.get("web_research_result", []))
+    if len(summaries) > 25000:
+        summaries = summaries[:25000] + "...(内容已截断)"
+    
+    # 生成答案
+    formatted_prompt = answer_instructions.format(
+        current_date=get_current_date(),
+        research_topic=get_research_topic(state["messages"]),
+        summaries=summaries,
+    )
+    
+    result: FinalAnswer = structured_llm.invoke(formatted_prompt)
+    
+    # 组装最终内容
+    result_content = result.answer
+    if result.summary_points:
+        result_content += "\n\n## 关键要点：\n" + "\n".join(f"{i+1}. {point}" for i, point in enumerate(result.summary_points))
+    result_content += f"\n\n*可信度: {result.confidence_level}/10*"
 
     return {
         "messages": [AIMessage(content=result_content)],
-        "sources_gathered": unique_sources,
+        "sources_gathered": state.get("sources_gathered", []),
     }
 
 
