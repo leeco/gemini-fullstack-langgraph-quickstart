@@ -58,9 +58,9 @@ answer_instructions = """基于提供的摘要为用户的问题生成高质量�
 - 您可以访问从前面步骤收集的所有信息。
 - 您可以访问用户的问题。
 - 基于提供的摘要和用户的问题，为用户的问题生成高质量的答案。
-- 在答案中正确包含您使用的摘要来源，使用markdown格式（例如：[新华网](https://vertexaisearch.cloud.google.com/id/1-0)）。这是必须的。
+- 在答案中正确包含您使用的摘要来源，使用markdown格式（例如：[新华网](https://www.news.cn/politics/xxjxs/index.htm)）。这是必须的。
 
-用户上下文：
+用户上下文：xxx
 - {research_topic}
 
 摘要：

@@ -276,27 +276,22 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
 
     # 初始化模型
     llm = ChatTongyi(model=reasoning_model)
-    structured_llm = llm.with_structured_output(FinalAnswer)
     
     # 限制摘要长度到25k字符
     summaries = "\n---\n\n".join(state.get("web_research_result", []))
     if len(summaries) > 25000:
         summaries = summaries[:25000] + "...(内容已截断)"
     
-    # 生成答案
+    # 生成答案 - 保持原有的 formatted_prompt
     formatted_prompt = answer_instructions.format(
         current_date=get_current_date(),
         research_topic=get_research_topic(state["messages"]),
         summaries=summaries,
     )
     
-    result: FinalAnswer = structured_llm.invoke(formatted_prompt)
-    
-    # 组装最终内容
-    result_content = result.answer
-    if result.summary_points:
-        result_content += "\n\n## 关键要点：\n" + "\n".join(f"{i+1}. {point}" for i, point in enumerate(result.summary_points))
-    result_content += f"\n\n*可信度: {result.confidence_level}/10*"
+    # 直接调用LLM，不使用结构化输出
+    result = llm.invoke(formatted_prompt)
+    result_content = result.content if hasattr(result, "content") else str(result)
 
     return {
         "messages": [AIMessage(content=result_content)],

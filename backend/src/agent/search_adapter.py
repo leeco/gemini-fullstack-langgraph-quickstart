@@ -94,16 +94,16 @@ class MilvusAdapter:
             # 构建提示词
             prompt = f"""基于知识库检索结果，为用户查询"{query_text}"生成结构化的研究报告。
 
-## 检索到的知识库内容：
-{retrieved_content}
+                ## 检索到的知识库内容：
+                {retrieved_content}
 
-## 你的任务：
-1. 仔细分析上述知识库内容
-2. 针对用户查询"{query_text}"进行智能整合和总结
-3. 生成结构化的研究报告
+                ## 你的任务：
+                1. 仔细分析上述知识库内容
+                2. 针对用户查询"{query_text}"进行智能整合和总结
+                3. 生成结构化的研究报告
 
-当前日期: {get_current_date()}
-"""
+                当前日期: {get_current_date()}
+                """
             
             # AI生成结构化结果
             ai_result: SearchResult = structured_llm.invoke(prompt)
