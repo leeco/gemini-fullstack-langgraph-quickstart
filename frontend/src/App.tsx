@@ -33,15 +33,21 @@ export default function App() {
       let processedEvent: ProcessedEvent | null = null;
       
       try {
+        // 添加详细的调试日志
+        console.log("收到事件:", JSON.stringify(event, null, 2));
+        
         // 处理节点更新事件 - LangGraph SDK的onUpdateEvent接收的是节点更新
         if (event && typeof event === 'object') {
           // 处理节点更新事件
           for (const nodeName of Object.keys(event)) {
             if (event[nodeName] && typeof event[nodeName] === 'object') {
+              const nodeData = event[nodeName];
+              console.log(`节点 ${nodeName} 数据:`, nodeData);
+              
               // 只有 finalize_answer 节点的消息才添加到对话中
-              if (nodeName === "finalize_answer" && event[nodeName].messages) {
+              if (nodeName === "finalize_answer" && nodeData.messages) {
                 // 添加最终答案消息到聊天消息中
-                const newMessages = event[nodeName].messages.map((msg: any, index: number) => ({
+                const newMessages = nodeData.messages.map((msg: any, index: number) => ({
                   ...msg,
                   id: `finalize-${Date.now()}-${index}`,
                 }));
@@ -51,44 +57,95 @@ export default function App() {
               // 根据节点名称创建不同的时间线事件
               switch (nodeName) {
                 case "generate_query": {
+                  const queries = nodeData.search_query || [];
+                  const queryList = Array.isArray(queries) ? queries.join(", ") : queries;
                   processedEvent = {
-                    title: "生成搜索查询",
-                    data: `生成了 ${event[nodeName].search_query?.length || 0} 个查询`,
+                    title: "🔍 生成搜索查询",
+                    data: queries.length > 0 
+                      ? `生成了 ${queries.length} 个查询: ${queryList.length > 100 ? queryList.substring(0, 100) + '...' : queryList}`
+                      : "正在生成搜索查询...",
                   };
                   break;
                 }
                 case "web_research":
                 case "doc_research": {
-                  const sources = event[nodeName].sources_gathered || [];
+                  const sources = nodeData.sources_gathered || [];
+                  const searchQuery = nodeData.search_query;
+                  const researchResult = nodeData.research_result;
+                  
+                  let details = [];
+                  if (searchQuery) {
+                    details.push(`查询: "${Array.isArray(searchQuery) ? searchQuery[0] : searchQuery}"`);
+                  }
+                  if (sources.length > 0) {
+                    details.push(`收集了 ${sources.length} 个资源`);
+                    const titles = sources.map((s: any) => s.title).filter(Boolean).slice(0, 2);
+                    if (titles.length > 0) {
+                      details.push(`包括: ${titles.join(", ")}${sources.length > 2 ? " 等" : ""}`);
+                    }
+                  }
+                  if (researchResult && researchResult.length > 0) {
+                    const result = Array.isArray(researchResult) ? researchResult[0] : researchResult;
+                    if (result && result.length > 50) {
+                      details.push(`研究摘要: ${result.substring(0, 80)}...`);
+                    }
+                  }
+                  
                   processedEvent = {
-                    title: "文档研究",
-                    data: `收集了 ${sources.length} 个资源`,
+                    title: "📚 网络研究",
+                    data: details.length > 0 ? details.join(" | ") : "正在进行网络研究...",
                   };
                   break;
                 }
                 case "reflection": {
+                  const isSufficient = nodeData.is_sufficient;
+                  const knowledgeGap = nodeData.knowledge_gap;
+                  const followUpQueries = nodeData.follow_up_queries || [];
+                  
+                  let details = [];
+                  if (isSufficient !== undefined) {
+                    details.push(isSufficient ? "✅ 研究结果充足" : "⚠️ 需要进一步研究");
+                  }
+                  if (knowledgeGap) {
+                    details.push(`知识缺口: ${knowledgeGap.length > 60 ? knowledgeGap.substring(0, 60) + '...' : knowledgeGap}`);
+                  }
+                  if (followUpQueries.length > 0) {
+                    details.push(`后续查询: ${followUpQueries.slice(0, 2).join(", ")}${followUpQueries.length > 2 ? " 等" : ""}`);
+                  }
+                  
                   processedEvent = {
-                    title: "研究反思",
-                    data: event[nodeName].is_sufficient 
-                      ? "研究结果充足，准备生成答案"
-                      : "需要进一步研究",
+                    title: "🤔 研究反思",
+                    data: details.length > 0 ? details.join(" | ") : "正在分析研究结果...",
+                  };
+                  break;
+                }
+                case "evaluate_research": {
+                  processedEvent = {
+                    title: "⚖️ 评估研究进度",
+                    data: "评估当前研究是否充分，决定下一步行动",
                   };
                   break;
                 }
                 case "finalize_answer": {
                   processedEvent = {
-                    title: "生成最终答案",
-                    data: "正在整合研究结果生成最终答案...",
+                    title: "✨ 生成最终答案",
+                    data: "正在整合所有研究结果，生成综合性答案...",
                   };
                   hasFinalizeEventOccurredRef.current = true;
                   break;
                 }
                 default: {
-                  // 对于未知节点，显示基本信息
+                  // 对于未知节点，显示更详细信息
+                  const dataKeys = Object.keys(nodeData);
+                  const summary = dataKeys.length > 0 
+                    ? `包含字段: ${dataKeys.slice(0, 3).join(", ")}${dataKeys.length > 3 ? " 等" : ""}`
+                    : "节点执行完成";
+                  
                   processedEvent = {
-                    title: `节点: ${nodeName}`,
-                    data: "节点执行完成",
+                    title: `🔧 ${nodeName}`,
+                    data: summary,
                   };
+                  break;
                 }
               }
               
@@ -100,15 +157,18 @@ export default function App() {
       } catch (error) {
         console.error("处理事件时出错:", error);
         processedEvent = {
-          title: "处理错误",
-          data: "事件处理过程中发生错误",
+          title: "❌ 处理错误",
+          data: `事件处理过程中发生错误: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
       
       if (processedEvent) {
         setProcessedEventsTimeline((prevEvents) => [
           ...prevEvents,
-          processedEvent!,
+          {
+            ...processedEvent!,
+            timestamp: new Date(),
+          },
         ]);
       }
     },

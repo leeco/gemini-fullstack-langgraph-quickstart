@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 export interface ProcessedEvent {
   title: string;
   data: string | number | boolean | string[] | Record<string, unknown>;
+  timestamp?: Date;
 }
 
 interface ActivityTimelineProps {
@@ -38,18 +39,26 @@ export function ActivityTimeline({
     if (index === 0 && isLoading && processedEvents.length === 0) {
       return <Loader2 className="h-4 w-4 text-neutral-400 animate-spin" />;
     }
+    
     const lowerTitle = title.toLowerCase();
-    if (lowerTitle.includes("generating") || lowerTitle.includes("生成") || lowerTitle.includes("查询")) {
-      return <TextSearch className="h-4 w-4 text-neutral-400" />;
-    } else if (lowerTitle.includes("thinking") || lowerTitle.includes("思考")) {
-      return <Loader2 className="h-4 w-4 text-neutral-400 animate-spin" />;
-    } else if (lowerTitle.includes("reflection") || lowerTitle.includes("反思") || lowerTitle.includes("评估")) {
-      return <Brain className="h-4 w-4 text-neutral-400" />;
-    } else if (lowerTitle.includes("research") || lowerTitle.includes("研究") || lowerTitle.includes("搜索") || lowerTitle.includes("文档")) {
-      return <Search className="h-4 w-4 text-neutral-400" />;
-    } else if (lowerTitle.includes("finalizing") || lowerTitle.includes("答案") || lowerTitle.includes("生成最终")) {
-      return <Pen className="h-4 w-4 text-neutral-400" />;
+    
+    // 使用emoji图标来匹配不同的节点类型
+    if (lowerTitle.includes("🔍") || lowerTitle.includes("生成搜索查询") || lowerTitle.includes("查询")) {
+      return <TextSearch className="h-4 w-4 text-yellow-400" />;
+    } else if (lowerTitle.includes("📚") || lowerTitle.includes("网络研究") || lowerTitle.includes("research") || lowerTitle.includes("研究") || lowerTitle.includes("搜索") || lowerTitle.includes("文档")) {
+      return <Search className="h-4 w-4 text-blue-400" />;
+    } else if (lowerTitle.includes("🤔") || lowerTitle.includes("研究反思") || lowerTitle.includes("reflection") || lowerTitle.includes("反思")) {
+      return <Brain className="h-4 w-4 text-purple-400" />;
+    } else if (lowerTitle.includes("⚖️") || lowerTitle.includes("评估") || lowerTitle.includes("evaluate")) {
+      return <Activity className="h-4 w-4 text-orange-400" />;
+    } else if (lowerTitle.includes("✨") || lowerTitle.includes("生成最终答案") || lowerTitle.includes("finalizing") || lowerTitle.includes("答案")) {
+      return <Pen className="h-4 w-4 text-green-400" />;
+    } else if (lowerTitle.includes("❌") || lowerTitle.includes("错误") || lowerTitle.includes("error")) {
+      return <Activity className="h-4 w-4 text-red-400" />;
+    } else if (lowerTitle.includes("🔧")) {
+      return <Activity className="h-4 w-4 text-gray-400" />;
     }
+    
     return <Activity className="h-4 w-4 text-neutral-400" />;
   };
 
@@ -104,15 +113,18 @@ export function ActivityTimeline({
                       {getEventIcon(eventItem.title, index)}
                     </div>
                     <div>
-                      <p className="text-sm text-neutral-200 font-medium mb-0.5">
+                      <p className="text-sm text-neutral-300 font-medium">
                         {eventItem.title}
                       </p>
-                      <p className="text-xs text-neutral-300 leading-relaxed">
+                      <p className="text-xs text-neutral-400 mt-1 leading-relaxed">
                         {typeof eventItem.data === "string"
                           ? eventItem.data
                           : Array.isArray(eventItem.data)
                           ? (eventItem.data as string[]).join(", ")
-                          : JSON.stringify(eventItem.data)}
+                          : JSON.stringify(eventItem.data, null, 2)}
+                      </p>
+                      <p className="text-xs text-neutral-500 mt-1">
+                        {eventItem.timestamp?.toLocaleTimeString() || new Date().toLocaleTimeString()}
                       </p>
                     </div>
                   </div>
