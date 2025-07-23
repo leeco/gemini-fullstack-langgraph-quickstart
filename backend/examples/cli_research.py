@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument(
         "question", 
         nargs='?',  # 使question参数可选，支持调试模式
-        default="违规裁员的类型有哪些？",  # 默认问题，便于调试
+        default="2024年3月份发行人有息债务总额?",  # 默认问题，便于调试
         help="Research question (default: 什么是人工智能？)"
     )
     parser.add_argument(
