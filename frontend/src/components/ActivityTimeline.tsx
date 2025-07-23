@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 
 export interface ProcessedEvent {
   title: string;
-  data: any;
+  data: string | number | boolean | string[] | Record<string, unknown>;
 }
 
 interface ActivityTimelineProps {
@@ -38,15 +38,16 @@ export function ActivityTimeline({
     if (index === 0 && isLoading && processedEvents.length === 0) {
       return <Loader2 className="h-4 w-4 text-neutral-400 animate-spin" />;
     }
-    if (title.toLowerCase().includes("generating")) {
+    const lowerTitle = title.toLowerCase();
+    if (lowerTitle.includes("generating") || lowerTitle.includes("生成") || lowerTitle.includes("查询")) {
       return <TextSearch className="h-4 w-4 text-neutral-400" />;
-    } else if (title.toLowerCase().includes("thinking")) {
+    } else if (lowerTitle.includes("thinking") || lowerTitle.includes("思考")) {
       return <Loader2 className="h-4 w-4 text-neutral-400 animate-spin" />;
-    } else if (title.toLowerCase().includes("reflection")) {
+    } else if (lowerTitle.includes("reflection") || lowerTitle.includes("反思") || lowerTitle.includes("评估")) {
       return <Brain className="h-4 w-4 text-neutral-400" />;
-    } else if (title.toLowerCase().includes("research")) {
+    } else if (lowerTitle.includes("research") || lowerTitle.includes("研究") || lowerTitle.includes("搜索") || lowerTitle.includes("文档")) {
       return <Search className="h-4 w-4 text-neutral-400" />;
-    } else if (title.toLowerCase().includes("finalizing")) {
+    } else if (lowerTitle.includes("finalizing") || lowerTitle.includes("答案") || lowerTitle.includes("生成最终")) {
       return <Pen className="h-4 w-4 text-neutral-400" />;
     }
     return <Activity className="h-4 w-4 text-neutral-400" />;

@@ -13,6 +13,7 @@ export default function App() {
   const [historicalActivities, setHistoricalActivities] = useState<
     Record<string, ProcessedEvent[]>
   >({});
+  const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const hasFinalizeEventOccurredRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,39 +27,84 @@ export default function App() {
       ? "http://localhost:2024"
       : "http://localhost:8123",
     assistantId: "agent",
-    messagesKey: "messages",
-    onUpdateEvent: (event: any) => {
+    // 移除 messagesKey，手动处理消息
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onUpdateEvent: (event: Record<string, any>) => {
       let processedEvent: ProcessedEvent | null = null;
-      if (event.generate_query) {
+      
+      try {
+        // 处理节点更新事件 - LangGraph SDK的onUpdateEvent接收的是节点更新
+        if (event && typeof event === 'object') {
+          // 处理节点更新事件
+          for (const nodeName of Object.keys(event)) {
+            if (event[nodeName] && typeof event[nodeName] === 'object') {
+              // 只有 finalize_answer 节点的消息才添加到对话中
+              if (nodeName === "finalize_answer" && event[nodeName].messages) {
+                // 添加最终答案消息到聊天消息中
+                const newMessages = event[nodeName].messages.map((msg: any, index: number) => ({
+                  ...msg,
+                  id: `finalize-${Date.now()}-${index}`,
+                }));
+                setChatMessages(prev => [...prev, ...newMessages]);
+              }
+              
+              // 根据节点名称创建不同的时间线事件
+              switch (nodeName) {
+                case "generate_query": {
+                  processedEvent = {
+                    title: "生成搜索查询",
+                    data: `生成了 ${event[nodeName].search_query?.length || 0} 个查询`,
+                  };
+                  break;
+                }
+                case "web_research":
+                case "doc_research": {
+                  const sources = event[nodeName].sources_gathered || [];
+                  processedEvent = {
+                    title: "文档研究",
+                    data: `收集了 ${sources.length} 个资源`,
+                  };
+                  break;
+                }
+                case "reflection": {
+                  processedEvent = {
+                    title: "研究反思",
+                    data: event[nodeName].is_sufficient 
+                      ? "研究结果充足，准备生成答案"
+                      : "需要进一步研究",
+                  };
+                  break;
+                }
+                case "finalize_answer": {
+                  processedEvent = {
+                    title: "生成最终答案",
+                    data: "正在整合研究结果生成最终答案...",
+                  };
+                  hasFinalizeEventOccurredRef.current = true;
+                  break;
+                }
+                default: {
+                  // 对于未知节点，显示基本信息
+                  processedEvent = {
+                    title: `节点: ${nodeName}`,
+                    data: "节点执行完成",
+                  };
+                }
+              }
+              
+              // 找到第一个匹配的节点后停止
+              break;
+            }
+          }
+        }
+      } catch (error) {
+        console.error("处理事件时出错:", error);
         processedEvent = {
-          title: "Generating Search Queries",
-          data: event.generate_query?.search_query?.join(", ") || "",
+          title: "处理错误",
+          data: "事件处理过程中发生错误",
         };
-      } else if (event.web_research) {
-        const sources = event.web_research.sources_gathered || [];
-        const numSources = sources.length;
-        const uniqueLabels = [
-          ...new Set(sources.map((s: any) => s.label).filter(Boolean)),
-        ];
-        const exampleLabels = uniqueLabels.slice(0, 3).join(", ");
-        processedEvent = {
-          title: "Web Research",
-          data: `Gathered ${numSources} sources. Related to: ${
-            exampleLabels || "N/A"
-          }.`,
-        };
-      } else if (event.reflection) {
-        processedEvent = {
-          title: "Reflection",
-          data: "Analysing Web Research Results",
-        };
-      } else if (event.finalize_answer) {
-        processedEvent = {
-          title: "Finalizing Answer",
-          data: "Composing and presenting the final answer.",
-        };
-        hasFinalizeEventOccurredRef.current = true;
       }
+      
       if (processedEvent) {
         setProcessedEventsTimeline((prevEvents) => [
           ...prevEvents,
@@ -66,8 +112,9 @@ export default function App() {
         ]);
       }
     },
-    onError: (error: any) => {
-      setError(error.message);
+    onError: (error: unknown) => {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setError(errorMessage);
     },
   });
 
@@ -80,15 +127,15 @@ export default function App() {
         scrollViewport.scrollTop = scrollViewport.scrollHeight;
       }
     }
-  }, [thread.messages]);
+  }, [chatMessages]);
 
   useEffect(() => {
     if (
       hasFinalizeEventOccurredRef.current &&
       !thread.isLoading &&
-      thread.messages.length > 0
+      chatMessages.length > 0
     ) {
-      const lastMessage = thread.messages[thread.messages.length - 1];
+      const lastMessage = chatMessages[chatMessages.length - 1];
       if (lastMessage && lastMessage.type === "ai" && lastMessage.id) {
         setHistoricalActivities((prev) => ({
           ...prev,
@@ -97,7 +144,7 @@ export default function App() {
       }
       hasFinalizeEventOccurredRef.current = false;
     }
-  }, [thread.messages, thread.isLoading, processedEventsTimeline]);
+  }, [chatMessages, thread.isLoading, processedEventsTimeline]);
 
   const handleSubmit = useCallback(
     (submittedInputValue: string, effort: string, model: string) => {
@@ -126,13 +173,17 @@ export default function App() {
           break;
       }
 
+      // 添加用户消息到聊天消息中
+      const userMessage: Message = {
+        type: "human",
+        content: submittedInputValue,
+        id: `user-${Date.now()}`,
+      };
+      setChatMessages(prev => [...prev, userMessage]);
+
       const newMessages: Message[] = [
-        ...(thread.messages || []),
-        {
-          type: "human",
-          content: submittedInputValue,
-          id: Date.now().toString(),
-        },
+        ...(chatMessages || []),
+        userMessage,
       ];
       thread.submit({
         messages: newMessages,
@@ -141,7 +192,7 @@ export default function App() {
         reasoning_model: model,
       });
     },
-    [thread]
+    [thread, chatMessages]
   );
 
   const handleCancel = useCallback(() => {
@@ -152,7 +203,7 @@ export default function App() {
   return (
     <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
       <main className="h-full w-full max-w-4xl mx-auto">
-          {thread.messages.length === 0 ? (
+          {chatMessages.length === 0 ? (
             <WelcomeScreen
               handleSubmit={handleSubmit}
               isLoading={thread.isLoading}
@@ -174,7 +225,7 @@ export default function App() {
             </div>
           ) : (
             <ChatMessagesView
-              messages={thread.messages}
+              messages={chatMessages}
               isLoading={thread.isLoading}
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}
