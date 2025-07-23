@@ -76,38 +76,23 @@ def main() -> None:
         print("-" * 50)
         
         # 使用 stream 方法和 stream_mode="updates" 流式获取每一步的增量更新
-        for chunk in graph.stream(state, stream_mode=["custom"]):
+        for chunk in graph.stream(state, stream_mode=["custom","messages"]):
             # print(chunk)
             chunk_type, chunk_data = chunk
             if chunk_type == "messages":
                 node_data, node_meta = chunk_data
-                print(node_meta.get("langgraph_node","unknown_node"))
-                aimessage:AIMessageChunk  =  node_data
-                print(aimessage.content)
+                node_name = node_meta.get("langgraph_node", "unknown_node")
+                aimessage: AIMessageChunk = node_data
+                # 优化输出：节点名和内容在一行，去除多余换行
+                content = aimessage.content.replace("\n", " ").strip()
+                print(f"{content}", end="", flush=True)
             elif chunk_type == "custom":
-                print(chunk_data)
+                print("\n**" + str(chunk_data) + "**\n")
             elif chunk_type == "updates":
                 # 解析 chunk_data，提取 node_name 和 node_message
                 for node_name, node_message in chunk_data.items():
                     print(f"节点名称: {node_name}")
                     print(f"节点消息: {node_message}")
-               
-                
-            # for node_name, node_output in chunk.items():
-            #     if node_name == "__start__":
-            #         continue
-                
-            #     # 打印节点名称，表示进入该节点
-            #     print(f"\n--- [节点: {node_name}] ---")
-                
-            #     # 检查是否为 finalize_answer 节点的流式输出
-            #     if node_name == 'finalize_answer' and isinstance(node_output, dict) and 'messages' in node_output:
-            #         # 实时打印流式答案
-            #         message = node_output['messages'][-1]
-            #         if isinstance(message, AIMessage):
-            #             # 打印 AIMessage 的内容
-            #             print(f"{message.content}", end="", flush=True)
-
         print("\n" + "="*50)
         print("\n📖 研究完成")
 

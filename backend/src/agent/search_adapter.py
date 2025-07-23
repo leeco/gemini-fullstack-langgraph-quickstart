@@ -88,7 +88,7 @@ class MilvusAdapter:
             retrieved_content = MilvusAdapter._format_retrieved_content(cleaned_results)
             
             # 初始化大模型
-            llm = ChatTongyi(model="qwen-max")
+            llm = ChatTongyi(model="qwen-turbo")
             structured_llm = llm.with_structured_output(SearchResult)
             
             # 构建提示词
@@ -125,7 +125,7 @@ class MilvusAdapter:
     @staticmethod
     def _filter_summary(summary: str, query_text: str) -> str:
         """使用LLM对summary进行二次提炼，仅保留与query_text高度相关的内容"""
-        llm = ChatTongyi(model="qwen-max")
+        llm = ChatTongyi(model="qwen-turbo")
         prompt = f"""你将获得与用户查询“{query_text}”相关的知识库检索内容摘要。请你仔细阅读内容，仅保留与该查询高度相关、最有价值的信息，去除无关或冗余部分，并用简洁、专业的语言进行二次提炼和总结，输出精炼后的内容。
                 请直接输出优化后的摘要，不要添加额外说明。  
 
