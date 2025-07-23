@@ -9,6 +9,8 @@ from langgraph.graph import START, END
 from langchain_core.runnables import RunnableConfig
 from langchain_community.chat_models import ChatTongyi
 from agent.search_adapter import search_kb_sync
+from langgraph.config import get_stream_writer
+import json
 
 from agent.state import (
     OverallState,
@@ -47,7 +49,7 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
         Dictionary with state update, including search_query key containing the generated queries
     """
     configurable = Configuration.from_runnable_config(config)
-
+    writer = get_stream_writer()
     # check for custom initial search query count
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
@@ -59,17 +61,18 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
         # 创建结构化LLM
         structured_llm = llm.with_structured_output(SearchQueryList)
         
+        research_topic =get_research_topic(state["messages"])
         # Format the prompt
         current_date = get_current_date()
         formatted_prompt = query_writer_instructions.format(
             current_date=current_date,
-            research_topic=get_research_topic(state["messages"]),
+            research_topic = research_topic,
             number_queries=state["initial_search_query_count"],
         )
         
         # 调用结构化输出
         result: SearchQueryList = structured_llm.invoke(formatted_prompt)
-        
+        writer({"langgraph_node": "generate_query", "message": f"{research_topic}生成查询：{result.query}"})
         return {"search_query": result.query}
         
     except Exception as e:
@@ -93,10 +96,11 @@ def continue_to_web_research(state: QueryGenerationState):
 def doc_research(state: SearchState, config: RunnableConfig) -> OverallState:
     """LangGraph节点：知识库文档检索（同步版本）"""
     try:
+        writer = get_stream_writer()
         # 使用完全同步的接口
         from agent.search_adapter import search_kb_sync
         result: SearchResult = search_kb_sync(state["search_query"], 10, use_ai=False)
-        
+        writer({"langgraph_node": "doc_research", "message": f"知识库检索结果：{result.search_content}"})
         # 转换sources格式
         sources_gathered = []
         for source in result.sources:
@@ -110,14 +114,14 @@ def doc_research(state: SearchState, config: RunnableConfig) -> OverallState:
         return {
             "sources_gathered": sources_gathered,
             "search_query": [state["search_query"]],
-            "web_research_result": [result.search_content],
+            "research_result": [result.search_content],
         }
     except Exception as e:
         print(f"知识库检索失败: {e}")
         return {
             "sources_gathered": [],
             "search_query": [state["search_query"]],
-            "web_research_result": [f"知识库检索失败: {str(e)}"],
+            "research_result": [f"知识库检索失败: {str(e)}"],
         }
 
 
@@ -131,10 +135,10 @@ def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
         config: Configuration for the runnable, including search API settings
 
     Returns:
-        Dictionary with state update, including sources_gathered, research_loop_count, and web_research_results
+        Dictionary with state update, including sources_gathered, research_loop_count, and research_results
     """
     configurable = Configuration.from_runnable_config(config)
-    
+    writer = get_stream_writer()
     try:
         # 初始化ChatTongyi模型
         llm = ChatTongyi(model=configurable.query_generator_model)
@@ -149,7 +153,7 @@ def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
 
         # 调用结构化输出
         result: SearchResult = structured_llm.invoke(formatted_prompt)
-        
+        writer({"langgraph_node": "web_research", "message": f"网络检索结果：{result.search_content}"})
         # 转换sources格式以匹配现有的数据结构
         sources_gathered = []
         for source in result.sources:
@@ -163,7 +167,7 @@ def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
         return {
             "sources_gathered": sources_gathered,
             "search_query": [state["search_query"]],
-            "web_research_result": [result.search_content],
+            "research_result": [result.search_content],
         }
         
     except Exception as e:
@@ -172,7 +176,7 @@ def web_research(state: SearchState, config: RunnableConfig) -> OverallState:
         return {
             "sources_gathered": [],
             "search_query": [state["search_query"]],
-            "web_research_result": [f"搜索查询: {state['search_query']} 的结果暂时无法获取。"],
+            "research_result": [f"搜索查询: {state['search_query']} 的结果暂时无法获取。"],
         }
 
 
@@ -189,7 +193,8 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
     Returns:
         Dictionary with state update, including search_query key containing the generated follow-up query
     """
-    configurable = Configuration.from_runnable_config(config)
+    configurable = Configuration.from_runnable_config(config)   
+    writer = get_stream_writer()
     # Increment the research loop count and get the reasoning model
     state["research_loop_count"] = state.get("research_loop_count", 0) + 1
     reasoning_model = state.get("reasoning_model", configurable.reflection_model)
@@ -206,12 +211,22 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
         formatted_prompt = reflection_instructions.format(
             current_date=current_date,
             research_topic=get_research_topic(state["messages"]),
-            summaries="\n\n---\n\n".join(state["web_research_result"]),
+            summaries="\n\n---\n\n".join(state["research_result"]),
         )
         
         # 调用结构化输出
         result: Reflection = structured_llm.invoke(formatted_prompt)
-        
+      
+        reflection_output = {
+            "is_sufficient": result.is_sufficient,
+            "knowledge_gap": result.knowledge_gap,
+            "follow_up_queries": result.follow_up_queries,
+        }
+        writer({
+            "langgraph_node": "reflection",
+            "message": json.dumps(reflection_output, ensure_ascii=False)
+        })
+
         return {
             "is_sufficient": result.is_sufficient,
             "knowledge_gap": result.knowledge_gap,
@@ -249,14 +264,17 @@ def evaluate_research(
         String literal indicating the next node to visit ("web_research" or "finalize_summary")
     """
     configurable = Configuration.from_runnable_config(config)
+    writer = get_stream_writer()
     max_research_loops = (
         state.get("max_research_loops")
         if state.get("max_research_loops") is not None
         else configurable.max_research_loops
     )
     if state["is_sufficient"] or state["research_loop_count"] >= max_research_loops:
+        writer({"langgraph_node": "evaluate_research", "message": f"研究结果充足，进入最终答案节点"})
         return "finalize_answer"
     else:
+        writer({"langgraph_node": "evaluate_research", "message": f"研究结果不足，进入网络检索节点"})
         return [
             Send(
                 "web_research",
@@ -272,13 +290,14 @@ def evaluate_research(
 def finalize_answer(state: OverallState, config: RunnableConfig):
     """LangGraph node that finalizes the research summary."""
     configurable = Configuration.from_runnable_config(config)
+    writer = get_stream_writer()
     reasoning_model = state.get("reasoning_model") or configurable.answer_model
 
     # 初始化模型
     llm = ChatTongyi(model=reasoning_model)
     
     # 限制摘要长度到25k字符
-    summaries = "\n---\n\n".join(state.get("web_research_result", []))
+    summaries = "\n---\n\n".join(state.get("research_result", []))
     if len(summaries) > 25000:
         summaries = summaries[:25000] + "...(内容已截断)"
     
@@ -292,7 +311,7 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
     # 直接调用LLM，不使用结构化输出
     result = llm.invoke(formatted_prompt)
     result_content = result.content if hasattr(result, "content") else str(result)
-
+    writer({"langgraph_node": "finalize_answer", "message": f"最终答案：{result_content}"})
     return {
         "messages": [AIMessage(content=result_content)],
         "sources_gathered": state.get("sources_gathered", []),

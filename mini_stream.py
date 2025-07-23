@@ -11,7 +11,9 @@ async def stream_chat(question: str, mode):
     print(f"❓ {question}")
     print("-" * 50)
     
+    # 简化方案：只在updates事件时重置last_content
     last_content = ""
+    last_update_node = None
     
     async for chunk in client.runs.stream(
         None, "agent",
@@ -24,6 +26,7 @@ async def stream_chat(question: str, mode):
             # chunk.data 是列表，包含消息对象
             if isinstance(chunk.data, list) and chunk.data and chunk.data[0].get("type") == "ai":
                 content = chunk.data[0].get("content", "")
+                
                 if content != last_content:
                     new_part = content[len(last_content):]
                     if new_part:
@@ -34,13 +37,34 @@ async def stream_chat(question: str, mode):
             # Updates 模式 - 节点更新
             for node_name, node_output in chunk.data.items():
                 print(f"\n🔄 [{node_name}] ", end="")
-                if isinstance(node_output, dict):
+                
+                # 当切换到新节点时，重置last_content
+                if last_update_node != node_name:
+                    last_content = ""
+                    last_update_node = node_name
+                
+                # 特别处理 finalize_answer 节点
+                if node_name == 'finalize_answer' and isinstance(node_output, dict):
+                    # 只打印节点状态头信息，内容由 messages 流负责打字机效果
+                    print("正在生成最终答案...")
+                    # 显示其他字段，如 sources_gathered
+                    for key, value in node_output.items():
+                        if key != 'messages' and value:
+                             if isinstance(value, list):
+                                print(f"  {key}: {len(value)} 项")
+                             else:
+                                print(f"  {key}: {str(value)[:50]}...")
+
+                elif isinstance(node_output, dict):
                     for key, value in node_output.items():
                         if isinstance(value, list) and value:
                             print(f"{key}: {len(value)} 项")
                         elif value:
                             value_str = str(value)[:100] + "..." if len(str(value)) > 100 else str(value)
                             print(f"{key}: {value_str}")
+                else:
+                    # 备用打印，处理非字典类型的输出
+                    print(f"输出: {str(node_output)[:100]}...")
                             
         elif chunk.event and chunk.event.startswith("custom") and chunk.data:
             # Custom 模式 - 自定义数据

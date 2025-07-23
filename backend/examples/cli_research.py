@@ -76,7 +76,7 @@ def main() -> None:
         print("-" * 50)
         
         # 使用 stream 方法和 stream_mode="updates" 流式获取每一步的增量更新
-        for chunk in graph.stream(state, stream_mode=["updates", "messages", "custom"]):
+        for chunk in graph.stream(state, stream_mode=["custom"]):
             # print(chunk)
             chunk_type, chunk_data = chunk
             if chunk_type == "messages":
