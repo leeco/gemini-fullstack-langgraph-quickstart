@@ -94,14 +94,14 @@ def main() -> None:
                 aimessage: AIMessageChunk = node_data
                 # 优化输出：节点名和内容在一行，去除多余换行
                 content = aimessage.content.replace("\n", " ").strip()
-                print(f"{content}", end="", flush=True)
+                # print(f"{content}", end="", flush=True)
             elif chunk_type == "custom":
                 print("\n**" + str(chunk_data) + "**\n")
-            elif chunk_type == "updates":
+            # elif chunk_type == "updates":
                 # 解析 chunk_data，提取 node_name 和 node_message
-                for node_name, node_message in chunk_data.items():
-                    print(f"节点名称: {node_name}")
-                    print(f"节点消息: {node_message}")
+                # for node_name, node_message in chunk_data.items():
+                    # print(f"节点名称: {node_name}")
+                    # print(f"节点消息: {node_message}")
             elif chunk_type == "values":
                 # 显示完整状态值
                 if args.debug:

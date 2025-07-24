@@ -270,11 +270,14 @@ def evaluate_research(
         if state.get("max_research_loops") is not None
         else configurable.max_research_loops
     )
-    if state["is_sufficient"] or state["research_loop_count"] >= max_research_loops:
+    if state["is_sufficient"]:
         writer({"langgraph_node": "evaluate_research", "message": f"研究结果充足，进入最终答案节点"})
         return "finalize_answer"
+    elif state["research_loop_count"] >= max_research_loops:
+        writer({"langgraph_node": "evaluate_research", "message": f"已经达到最大研究次数，进入最终答案节点"})
+        return "finalize_answer"
     else:
-        writer({"langgraph_node": "evaluate_research", "message": f"研究结果不足，进入网络检索节点"})
+        writer({"langgraph_node": "evaluate_research", "message": f"研究结果不足，进入补充检索节点"})
         return [
             Send(
                 "web_research",
