@@ -6,17 +6,47 @@ import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
 import { Button } from "@/components/ui/button";
 
+/**
+ * The main application component that orchestrates the chat interface,
+ * handles streaming data from the backend, and manages application state.
+ */
 export default function App() {
+  /**
+   * State for storing the timeline of processed events from the backend graph.
+   * These are displayed in the activity timeline.
+   */
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
     ProcessedEvent[]
   >([]);
+  /**
+   * State for storing historical activities for each AI message.
+   * The key is the AI message ID, and the value is the list of events for that message.
+   */
   const [historicalActivities, setHistoricalActivities] = useState<
     Record<string, ProcessedEvent[]>
   >({});
+  /**
+   * State for storing the chat messages displayed in the UI.
+   */
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
+  /**
+   * Ref for the scroll area component to programmatically scroll to the bottom.
+   */
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  /**
+   * Ref to track if the 'finalize_answer' event has occurred.
+   * This helps in associating the activity timeline with the correct AI message.
+   */
   const hasFinalizeEventOccurredRef = useRef(false);
+  /**
+   * State for storing any errors that occur during the stream.
+   */
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * `useStream` hook from LangGraph SDK to manage the connection to the backend.
+   * It handles streaming events and provides methods to interact with the stream.
+   */
   const thread = useStream<{
     messages: Message[];
     initial_search_query_count: number;
@@ -24,160 +54,193 @@ export default function App() {
     reasoning_model: string;
   }>({
     apiUrl: import.meta.env.DEV
-      ? "http://localhost:2024"
-      : "http://localhost:8123",
+      ? "http://localhost:2024" // Development API URL
+      : "http://localhost:8123", // Production API URL
     assistantId: "agent",
-    // 移除 messagesKey，手动处理消息
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    onUpdateEvent: (event: Record<string, any>) => {
-      let processedEvent: ProcessedEvent | null = null;
+    // We manually handle messages, so messagesKey is not used.
+    /**
+     * Callback for handling update events from the LangGraph stream.
+     * This function processes events from different nodes in the graph
+     * and updates the activity timeline.
+     * @param {Record<string, any>} event - The event object from the stream.
+     */
+                // Disabled onUpdateEvent - now using onCustomEvent instead
+      // onUpdateEvent: (data: unknown) => { ... },
       
-      try {
-        // 添加详细的调试日志
-        console.log("收到事件:", JSON.stringify(event, null, 2));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onCustomEvent: (data: unknown, options?: any) => {
+        let processedEvent: ProcessedEvent | null = null;
         
-        // 处理节点更新事件 - LangGraph SDK的onUpdateEvent接收的是节点更新
-        if (event && typeof event === 'object') {
-          // 处理节点更新事件
-          for (const nodeName of Object.keys(event)) {
-            if (event[nodeName] && typeof event[nodeName] === 'object') {
-              const nodeData = event[nodeName];
-              console.log(`节点 ${nodeName} 数据:`, nodeData);
+        try {
+          // Detailed debug log for incoming custom events.
+          console.log("Received custom event:", JSON.stringify(data, null, 2));
+          
+          // Process custom event data
+          if (data && typeof data === 'object') {
+            const eventData = data as Record<string, any>;
+            
+            // Handle LangGraph node events with langgraph_node field
+            if (eventData.langgraph_node && eventData.message) {
+              const nodeName = eventData.langgraph_node;
+              const message = eventData.message;
               
-              // 只有 finalize_answer 节点的消息才添加到对话中
-              if (nodeName === "finalize_answer" && nodeData.messages) {
-                // 添加最终答案消息到聊天消息中
-                const newMessages = nodeData.messages.map((msg: any, index: number) => ({
-                  ...msg,
-                  id: `finalize-${Date.now()}-${index}`,
-                }));
-                setChatMessages(prev => [...prev, ...newMessages]);
+              console.log(`Custom event - Node ${nodeName}:`, message);
+              
+              // Only messages from the 'finalize_answer' node are added to the chat.
+              if (nodeName === "finalize_answer") {
+                // Add the final answer message to the chat messages.
+                const aiMessage = {
+                  type: "ai" as const,
+                  content: message,
+                  id: `finalize-${Date.now()}`,
+                };
+                setChatMessages(prev => [...prev, aiMessage]);
+                hasFinalizeEventOccurredRef.current = true;
               }
               
-              // 根据节点名称创建不同的时间线事件
+              // Create different timeline events based on the node name.
               switch (nodeName) {
                 case "generate_query": {
-                  const queries = nodeData.search_query || [];
-                  const queryList = Array.isArray(queries) ? queries.join(", ") : queries;
+                  // Extract query information from message
                   processedEvent = {
-                    title: "🔍 生成搜索查询",
-                    data: queries.length > 0 
-                      ? `生成了 ${queries.length} 个查询: ${queryList.length > 100 ? queryList.substring(0, 100) + '...' : queryList}`
-                      : "正在生成搜索查询...",
+                    title: "🔍 Generating Search Queries",
+                    data: message.length > 150 ? message.substring(0, 150) + '...' : message,
                   };
                   break;
                 }
-                case "web_research":
+                case "web_research": {
+                  processedEvent = {
+                    title: "🌐 Web Research",
+                    data: message.length > 150 ? message.substring(0, 150) + '...' : message,
+                  };
+                  break;
+                }
                 case "doc_research": {
-                  const sources = nodeData.sources_gathered || [];
-                  const searchQuery = nodeData.search_query;
-                  const researchResult = nodeData.research_result;
-                  
-                  let details = [];
-                  if (searchQuery) {
-                    details.push(`查询: "${Array.isArray(searchQuery) ? searchQuery[0] : searchQuery}"`);
-                  }
-                  if (sources.length > 0) {
-                    details.push(`收集了 ${sources.length} 个资源`);
-                    const titles = sources.map((s: any) => s.title).filter(Boolean).slice(0, 2);
-                    if (titles.length > 0) {
-                      details.push(`包括: ${titles.join(", ")}${sources.length > 2 ? " 等" : ""}`);
-                    }
-                  }
-                  if (researchResult && researchResult.length > 0) {
-                    const result = Array.isArray(researchResult) ? researchResult[0] : researchResult;
-                    if (result && result.length > 50) {
-                      details.push(`研究摘要: ${result.substring(0, 80)}...`);
-                    }
-                  }
+                  // Extract document count and relevance info
+                  const docCount = (message.match(/共返回(\d+)个/)?.[1]) || "unknown";
+                  const relevanceInfo = message.includes("相关度") ? `Found ${docCount} relevant documents` : "Searching knowledge base";
                   
                   processedEvent = {
-                    title: "📚 网络研究",
-                    data: details.length > 0 ? details.join(" | ") : "正在进行网络研究...",
+                    title: "📚 Knowledge Base Research",
+                    data: relevanceInfo + (message.length > 100 ? ` - ${message.substring(0, 100)}...` : ` - ${message}`),
                   };
                   break;
                 }
                 case "reflection": {
-                  const isSufficient = nodeData.is_sufficient;
-                  const knowledgeGap = nodeData.knowledge_gap;
-                  const followUpQueries = nodeData.follow_up_queries || [];
-                  
-                  let details = [];
-                  if (isSufficient !== undefined) {
-                    details.push(isSufficient ? "✅ 研究结果充足" : "⚠️ 需要进一步研究");
+                  try {
+                    // Try to parse JSON reflection data
+                    const reflectionData = JSON.parse(message);
+                    const isSufficient = reflectionData.is_sufficient;
+                    const knowledgeGap = reflectionData.knowledge_gap;
+                    const followUpQueries = reflectionData.follow_up_queries || [];
+                    
+                    let details = [];
+                    if (isSufficient !== undefined) {
+                      details.push(isSufficient ? "✅ Research results are sufficient" : "⚠️ Further research needed");
+                    }
+                    if (knowledgeGap) {
+                      details.push(`Knowledge Gap: ${knowledgeGap.length > 80 ? knowledgeGap.substring(0, 80) + '...' : knowledgeGap}`);
+                    }
+                    if (followUpQueries.length > 0) {
+                      details.push(`Follow-up queries: ${followUpQueries.length} planned`);
+                    }
+                    
+                    processedEvent = {
+                      title: "🤔 Research Reflection",
+                      data: details.length > 0 ? details.join(" | ") : "Analyzing research results...",
+                    };
+                  } catch {
+                    // Fallback if message is not JSON
+                    processedEvent = {
+                      title: "🤔 Research Reflection",
+                      data: message.length > 150 ? message.substring(0, 150) + '...' : message,
+                    };
                   }
-                  if (knowledgeGap) {
-                    details.push(`知识缺口: ${knowledgeGap.length > 60 ? knowledgeGap.substring(0, 60) + '...' : knowledgeGap}`);
-                  }
-                  if (followUpQueries.length > 0) {
-                    details.push(`后续查询: ${followUpQueries.slice(0, 2).join(", ")}${followUpQueries.length > 2 ? " 等" : ""}`);
-                  }
-                  
-                  processedEvent = {
-                    title: "🤔 研究反思",
-                    data: details.length > 0 ? details.join(" | ") : "正在分析研究结果...",
-                  };
                   break;
                 }
                 case "evaluate_research": {
                   processedEvent = {
-                    title: "⚖️ 评估研究进度",
-                    data: "评估当前研究是否充分，决定下一步行动",
+                    title: "⚖️ Evaluating Research Progress",
+                    data: message,
                   };
                   break;
                 }
                 case "finalize_answer": {
                   processedEvent = {
-                    title: "✨ 生成最终答案",
-                    data: "正在整合所有研究结果，生成综合性答案...",
+                    title: "✨ Generating Final Answer",
+                    data: "Consolidating all research findings to generate a comprehensive answer...",
                   };
-                  hasFinalizeEventOccurredRef.current = true;
                   break;
                 }
                 default: {
-                  // 对于未知节点，显示更详细信息
-                  const dataKeys = Object.keys(nodeData);
-                  const summary = dataKeys.length > 0 
-                    ? `包含字段: ${dataKeys.slice(0, 3).join(", ")}${dataKeys.length > 3 ? " 等" : ""}`
-                    : "节点执行完成";
-                  
+                  // For unknown nodes, display the message
                   processedEvent = {
                     title: `🔧 ${nodeName}`,
-                    data: summary,
+                    data: message.length > 150 ? message.substring(0, 150) + '...' : message,
                   };
                   break;
                 }
               }
-              
-              // 找到第一个匹配的节点后停止
-              break;
+            } else {
+              // Handle other types of custom events (fallback)
+              switch (eventData.type) {
+                case 'progress_update':
+                  processedEvent = {
+                    title: "📊 Progress Update",
+                    data: eventData.message || "Progress update received",
+                  };
+                  break;
+                case 'error_occurred':
+                  setError(eventData.message || 'An unknown error occurred');
+                  processedEvent = {
+                    title: "❌ Error",
+                    data: eventData.message || "An error occurred",
+                  };
+                  break;
+                case 'status_change':
+                  processedEvent = {
+                    title: "🔄 Status Change",
+                    data: eventData.message || "Status changed",
+                  };
+                  break;
+                default:
+                  // Handle unknown event format
+                  processedEvent = {
+                    title: "📢 Custom Event",
+                    data: `Received: ${JSON.stringify(eventData).substring(0, 100)}...`,
+                  };
+                  break;
+              }
             }
           }
+        } catch (error) {
+          console.error("Error processing custom event:", error);
+          processedEvent = {
+            title: "❌ Custom Event Processing Error",
+            data: `An error occurred during custom event processing: ${error instanceof Error ? error.message : String(error)}`,
+          };
         }
-      } catch (error) {
-        console.error("处理事件时出错:", error);
-        processedEvent = {
-          title: "❌ 处理错误",
-          data: `事件处理过程中发生错误: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-      
-      if (processedEvent) {
-        setProcessedEventsTimeline((prevEvents) => [
-          ...prevEvents,
-          {
-            ...processedEvent!,
-            timestamp: new Date(),
-          },
-        ]);
-      }
-    },
+        
+        if (processedEvent) {
+          setProcessedEventsTimeline((prevEvents) => [
+            ...prevEvents,
+            {
+              ...processedEvent!,
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      },
+    
     onError: (error: unknown) => {
       const errorMessage = error instanceof Error ? error.message : String(error);
       setError(errorMessage);
     },
   });
 
+  /**
+   * Effect to scroll the chat view to the bottom whenever new messages are added.
+   */
   useEffect(() => {
     if (scrollAreaRef.current) {
       const scrollViewport = scrollAreaRef.current.querySelector(
@@ -189,6 +252,10 @@ export default function App() {
     }
   }, [chatMessages]);
 
+  /**
+   * Effect to associate the completed activity timeline with the last AI message.
+   * This runs when the stream is no longer loading and a final answer has been generated.
+   */
   useEffect(() => {
     if (
       hasFinalizeEventOccurredRef.current &&
@@ -206,16 +273,23 @@ export default function App() {
     }
   }, [chatMessages, thread.isLoading, processedEventsTimeline]);
 
+  /**
+   * Callback to handle form submission.
+   * It sends the user's message and configuration to the backend.
+   * @param {string} submittedInputValue - The user's input message.
+   * @param {string} effort - The selected effort level ('low', 'medium', 'high').
+   * @param {string} model - The selected reasoning model.
+   */
   const handleSubmit = useCallback(
     (submittedInputValue: string, effort: string, model: string) => {
       if (!submittedInputValue.trim()) return;
       setProcessedEventsTimeline([]);
       hasFinalizeEventOccurredRef.current = false;
 
-      // convert effort to, initial_search_query_count and max_research_loops
-      // low means max 1 loop and 1 query
-      // medium means max 3 loops and 3 queries
-      // high means max 10 loops and 5 queries
+      // Convert effort to initial_search_query_count and max_research_loops.
+      // low: max 1 loop and 1 query
+      // medium: max 3 loops and 3 queries
+      // high: max 10 loops and 5 queries
       let initial_search_query_count = 0;
       let max_research_loops = 0;
       switch (effort) {
@@ -233,7 +307,7 @@ export default function App() {
           break;
       }
 
-      // 添加用户消息到聊天消息中
+      // Add user message to the chat.
       const userMessage: Message = {
         type: "human",
         content: submittedInputValue,
@@ -241,10 +315,12 @@ export default function App() {
       };
       setChatMessages(prev => [...prev, userMessage]);
 
+      // Prepare the messages to be sent to the backend.
       const newMessages: Message[] = [
         ...(chatMessages || []),
         userMessage,
       ];
+      // Submit the message and configuration to the stream.
       thread.submit({
         messages: newMessages,
         initial_search_query_count: initial_search_query_count,
@@ -255,6 +331,10 @@ export default function App() {
     [thread, chatMessages]
   );
 
+  /**
+   * Callback to handle stream cancellation.
+   * Stops the stream and reloads the page.
+   */
   const handleCancel = useCallback(() => {
     thread.stop();
     window.location.reload();
@@ -264,12 +344,14 @@ export default function App() {
     <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
       <main className="h-full w-full max-w-4xl mx-auto">
           {chatMessages.length === 0 ? (
+            // Display the welcome screen if there are no messages.
             <WelcomeScreen
               handleSubmit={handleSubmit}
               isLoading={thread.isLoading}
               onCancel={handleCancel}
             />
           ) : error ? (
+            // Display an error message if an error occurs.
             <div className="flex flex-col items-center justify-center h-full">
               <div className="flex flex-col items-center justify-center gap-4">
                 <h1 className="text-2xl text-red-400 font-bold">Error</h1>
@@ -284,6 +366,7 @@ export default function App() {
               </div>
             </div>
           ) : (
+            // Display the chat messages view.
             <ChatMessagesView
               messages={chatMessages}
               isLoading={thread.isLoading}
